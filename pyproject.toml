@@ -42,7 +42,15 @@ quote-style = "double"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "-ra"
+# Suite rápida por padrão: exclui integração real e aplica o gate de cobertura ≥80%.
+# Rode a integração real sob demanda com `pytest -m integration` (sobrescreve o `-m`).
+addopts = "-ra -m 'not integration' --cov=mcp_tableau --cov-report=term-missing --cov-fail-under=80"
 markers = [
     "integration: testes que exigem um Tableau Server/Cloud real (fora da suite rápida)",
 ]
+
+[tool.coverage.run]
+source = ["mcp_tableau"]
+
+[tool.coverage.report]
+show_missing = true

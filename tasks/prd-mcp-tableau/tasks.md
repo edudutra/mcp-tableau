@@ -6,11 +6,11 @@
 - [x] 2.0 Camada de integração REST (`tableau/client.py`)
 - [x] 3.0 Camada de integração GraphQL (`tableau/metadata.py`)
 - [x] 4.0 Camada de validação pura (`validation/*`)
-- [ ] 5.0 Tools — Capacidade 1 Deploy (`tools/deploy.py`)
-- [ ] 6.0 Tools — Capacidade 4 Metadados (`tools/metadata.py`)
-- [ ] 7.0 Tools — Capacidade 3 QA (`tools/qa.py`)
-- [ ] 8.0 Tools — Capacidade 2 Visual (`tools/visual.py`)
-- [ ] 9.0 Integração MCP in-memory e cobertura ≥80%
+- [x] 5.0 Tools — Capacidade 1 Deploy (`tools/deploy.py`)
+- [x] 6.0 Tools — Capacidade 4 Metadados (`tools/metadata.py`)
+- [x] 7.0 Tools — Capacidade 3 QA (`tools/qa.py`)
+- [x] 8.0 Tools — Capacidade 2 Visual (`tools/visual.py`)
+- [x] 9.0 Integração MCP in-memory e cobertura ≥80%
 
 
 ## Sequenciamento e Paralelismo

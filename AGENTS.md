@@ -71,8 +71,17 @@ mcp-tableau/
 
 - **[fastmcp](https://github.com/jlowin/fastmcp)** (>= 3.4.2): framework para construir o servidor MCP e registrar as ferramentas.
 - **[tableauserverclient](https://tableau.github.io/server-client-python/)**: cliente oficial da Tableau REST API para autenticacao, publicacao e gerenciamento de conteudo.
-- **[pydantic](https://docs.pydantic.dev/)**: validacao e tipagem dos modelos de entrada e saida das ferramentas.
+- **[pydantic](https://docs.pydantic.dev/)** / **[pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)**: validacao e tipagem dos modelos de entrada/saida e carregamento validado das configuracoes via ambiente.
+- **[tableaudocumentapi](https://tableau.github.io/document-api-python/)**: parsing local de workbooks/datasources para a QA estrutural e de complexidade.
+- **[Pillow](https://python-pillow.org/)**: heuristica de tela em branco sobre o PNG renderizado (Capacidade visual).
+- **[rapidfuzz](https://github.com/rapidfuzz/RapidFuzz)**: similaridade fuzzy para a busca de conteudo semelhante (linhagem/dicionario).
 - **[python-dotenv](https://github.com/theskumar/python-dotenv)**: carregamento de variaveis de ambiente a partir de um arquivo `.env` em desenvolvimento.
+
+## Execucao
+
+- Iniciar o servidor MCP (transporte stdio): `uv run python main.py`.
+- Suite rapida (unitarios + integracao MCP in-memory) com cobertura e gate >= 80%: `uv run pytest`.
+- Integracao com Tableau real (lenta, sob demanda): `uv run pytest -m integration` com `TABLEAU_INTEGRATION=1` e as variaveis de sandbox definidas.
 
 ### Desenvolvimento
 

@@ -28,16 +28,16 @@ resultados estruturados e atribuíveis ou `ToolError`.
 
 ## Subtarefas
 
-- [ ] 6.1 `get_downstream_lineage(datasource_id)` → `LineageResult` (`direction="downstream"`);
+- [x] 6.1 `get_downstream_lineage(datasource_id)` → `LineageResult` (`direction="downstream"`);
   lista vazia com `status="success"` quando não há dependentes (sobrescrita segura).
-- [ ] 6.2 `get_upstream_lineage(content_id, content_type="workbook")` → `LineageResult`
+- [x] 6.2 `get_upstream_lineage(content_id, content_type="workbook")` → `LineageResult`
   (`direction="upstream"`).
-- [ ] 6.3 `get_datasource_dictionary(datasource_id)` → `DataDictionary`; `formula`/`description`
+- [x] 6.3 `get_datasource_dictionary(datasource_id)` → `DataDictionary`; `formula`/`description`
   podem ser `null`.
-- [ ] 6.4 `search_similar_content(query, content_type="all", limit=10)`: listar candidatos via
+- [x] 6.4 `search_similar_content(query, content_type="all", limit=10)`: listar candidatos via
   REST, ranquear com `rank_similar` (Tarefa 4.0) e retornar `SimilarityResult`; validar `limit`
   (1–50) → `VALIDATION_ERROR`; `matches: []` não é erro.
-- [ ] 6.5 Mapear falhas Metadata/REST para `NOT_FOUND`/`UPSTREAM_ERROR`; registrar as tools no
+- [x] 6.5 Mapear falhas Metadata/REST para `NOT_FOUND`/`UPSTREAM_ERROR`; registrar as tools no
   `server.py`.
 
 ## Detalhes de implementação
@@ -58,14 +58,14 @@ Ver techspec.md § "Endpoints da API" → `get_downstream_lineage`, `get_upstrea
 
 ### Testes unitários
 
-- [ ] `test_get_downstream_lineage_retorna_dependencias_atribuiveis`
-- [ ] `test_get_downstream_lineage_sem_dependentes_retorna_lista_vazia_sucesso`
-- [ ] `test_get_upstream_lineage_workbook_retorna_fontes`
-- [ ] `test_get_datasource_dictionary_inclui_formula_de_calculados`
-- [ ] `test_get_datasource_dictionary_campos_sem_descricao_normalizados_null`
-- [ ] `test_search_similar_content_retorna_matches_ordenados`
-- [ ] `test_search_similar_content_sem_match_retorna_lista_vazia`
-- [ ] `test_search_similar_content_limit_invalido_retorna_validation_error`
+- [x] `test_get_downstream_lineage_retorna_dependencias_atribuiveis`
+- [x] `test_get_downstream_lineage_sem_dependentes_retorna_lista_vazia_sucesso`
+- [x] `test_get_upstream_lineage_workbook_retorna_fontes`
+- [x] `test_get_datasource_dictionary_inclui_formula_de_calculados`
+- [x] `test_get_datasource_dictionary_campos_sem_descricao_normalizados_null`
+- [x] `test_search_similar_content_retorna_matches_ordenados`
+- [x] `test_search_similar_content_sem_match_retorna_lista_vazia`
+- [x] `test_search_similar_content_limit_invalido_retorna_validation_error`
 
 ### Testes de integração
 

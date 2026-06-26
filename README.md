@@ -85,12 +85,19 @@ mcp-tableau/
 A suite rápida (unitários + integração MCP in-memory) mocka toda a rede/Tableau:
 
 ```bash
-uv run pytest                                               # suite rápida
-uv run pytest --cov=mcp_tableau --cov-report=term-missing   # com cobertura
-uv run pytest -m "not integration"                          # exclui integração real
+uv run pytest                                               # suite rápida + cobertura
+uv run pytest -m integration                                # integração com Tableau real
 ```
 
-Meta de cobertura: **≥ 80%**. Lint e formatação com Ruff:
+A suite rápida exclui a integração real e aplica o gate de cobertura **≥ 80%**
+(`--cov-fail-under=80`) automaticamente — ambos configurados em `addopts` no
+`pyproject.toml`. A integração com Tableau real (publish/download roundtrip, render PNG e
+linhagem) é marcada com `@pytest.mark.integration`, fica fora da suite rápida e só roda
+com `TABLEAU_INTEGRATION=1` e as variáveis de sandbox definidas
+(`TABLEAU_IT_WORKBOOK_PATH`, `TABLEAU_IT_PROJECT`, `TABLEAU_IT_VIEW_ID`,
+`TABLEAU_IT_DATASOURCE_ID`); caso contrário, esses testes são pulados.
+
+Lint e formatação com Ruff:
 
 ```bash
 uv run ruff check .

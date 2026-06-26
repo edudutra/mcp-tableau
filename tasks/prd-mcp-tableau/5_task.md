@@ -28,15 +28,15 @@ transparente para artefatos grandes e retornam `PublishResult` ou o envelope `To
 
 ## Subtarefas
 
-- [ ] 5.1 Implementar `publish_workbook(file_path, project_name, overwrite=false)`: validar
+- [x] 5.1 Implementar `publish_workbook(file_path, project_name, overwrite=false)`: validar
   extensão/existência do arquivo (`INVALID_FILE`), resolver projeto (`PROJECT_NOT_FOUND`),
   aplicar `PublishMode` e retornar `PublishResult`.
-- [ ] 5.2 Implementar `publish_datasource(file_path, project_name, overwrite=false)` análoga para
+- [x] 5.2 Implementar `publish_datasource(file_path, project_name, overwrite=false)` análoga para
   `.tds`/`.tdsx`, com `content_type="datasource"`.
-- [ ] 5.3 Tratar overwrite: `overwrite=false` em conteúdo existente retorna
+- [x] 5.3 Tratar overwrite: `overwrite=false` em conteúdo existente retorna
   `OVERWRITE_NOT_ALLOWED`; `overwrite=true` usa `PublishMode.Overwrite` e reporta
   `mode="overwrite"`; artefato grande define `chunked=true`.
-- [ ] 5.4 Mapear falhas de auth/permissão/payload/upstream do `TableauClient` para `ToolError`
+- [x] 5.4 Mapear falhas de auth/permissão/payload/upstream do `TableauClient` para `ToolError`
   sem vazar token; registrar as ferramentas no `server.py`.
 
 ## Detalhes de implementação
@@ -58,16 +58,16 @@ respostas, exemplos), § "Modelos de dados" → `PublishResult` e § "Visão dos
 
 ### Testes unitários
 
-- [ ] `test_publish_workbook_arquivo_valido_chama_client_e_retorna_publishresult`
-- [ ] `test_publish_workbook_extensao_invalida_retorna_error_invalid_file_sem_chamar_client`
-- [ ] `test_publish_workbook_arquivo_inexistente_retorna_error_invalid_file`
-- [ ] `test_publish_workbook_projeto_inexistente_retorna_error_project_not_found`
-- [ ] `test_publish_workbook_overwrite_false_em_conteudo_existente_retorna_overwrite_not_allowed`
-- [ ] `test_publish_workbook_overwrite_true_usa_publishmode_overwrite`
-- [ ] `test_publish_workbook_arquivo_grande_define_chunked_true`
-- [ ] `test_publish_workbook_auth_falha_retorna_error_auth_failed_sem_vazar_token`
-- [ ] `test_publish_datasource_extensao_tdsx_aceita`
-- [ ] `test_publish_datasource_extensao_invalida_rejeitada`
+- [x] `test_publish_workbook_arquivo_valido_chama_client_e_retorna_publishresult`
+- [x] `test_publish_workbook_extensao_invalida_retorna_error_invalid_file_sem_chamar_client`
+- [x] `test_publish_workbook_arquivo_inexistente_retorna_error_invalid_file`
+- [x] `test_publish_workbook_projeto_inexistente_retorna_error_project_not_found`
+- [x] `test_publish_workbook_overwrite_false_em_conteudo_existente_retorna_overwrite_not_allowed`
+- [x] `test_publish_workbook_overwrite_true_usa_publishmode_overwrite`
+- [x] `test_publish_workbook_arquivo_grande_define_chunked_true`
+- [x] `test_publish_workbook_auth_falha_retorna_error_auth_failed_sem_vazar_token`
+- [x] `test_publish_datasource_extensao_tdsx_aceita`
+- [x] `test_publish_datasource_extensao_invalida_rejeitada`
 
 ### Testes de integração
 

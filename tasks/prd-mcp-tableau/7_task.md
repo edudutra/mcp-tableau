@@ -29,15 +29,15 @@ falhar a ferramenta (objetivo é diagnóstico, não bloqueio).
 
 ## Subtarefas
 
-- [ ] 7.1 `inspect_workbook_structure(workbook_id)`: baixar workbook (`TableauClient`), chamar
+- [x] 7.1 `inspect_workbook_structure(workbook_id)`: baixar workbook (`TableauClient`), chamar
   `inspect_structure` e combinar com a Metadata API para campos quebrados resolvidos pelo
   servidor; retornar `StructureReport`. `NOT_FOUND`/`UPSTREAM_ERROR` em falha.
-- [ ] 7.2 Garantir que `issues` (campos quebrados/filtros sem lógica) **não** falham a
+- [x] 7.2 Garantir que `issues` (campos quebrados/filtros sem lógica) **não** falham a
   ferramenta — populam o relatório com `severity`/`target`.
-- [ ] 7.3 `audit_workbook_complexity(workbook_id)`: obter estrutura, chamar `audit_complexity`
+- [x] 7.3 `audit_workbook_complexity(workbook_id)`: obter estrutura, chamar `audit_complexity`
   com os limiares da `Settings` (Tarefa 1.0) e retornar `ComplexityReport`
   (`compliant` true/false + `findings`).
-- [ ] 7.4 Registrar as tools no `server.py`.
+- [x] 7.4 Registrar as tools no `server.py`.
 
 ## Detalhes de implementação
 
@@ -56,11 +56,11 @@ Ver techspec.md § "Endpoints da API" → `inspect_workbook_structure`, `audit_w
 
 ### Testes unitários
 
-- [ ] `test_inspect_workbook_structure_baixa_e_parseia_retorna_report`
-- [ ] `test_inspect_workbook_structure_workbook_inexistente_retorna_not_found`
-- [ ] `test_inspect_workbook_structure_issues_nao_falham_ferramenta`
-- [ ] `test_audit_workbook_complexity_retorna_compliant_conforme_metricas`
-- [ ] `test_audit_workbook_complexity_usa_thresholds_de_config`
+- [x] `test_inspect_workbook_structure_baixa_e_parseia_retorna_report`
+- [x] `test_inspect_workbook_structure_workbook_inexistente_retorna_not_found`
+- [x] `test_inspect_workbook_structure_issues_nao_falham_ferramenta`
+- [x] `test_audit_workbook_complexity_retorna_compliant_conforme_metricas`
+- [x] `test_audit_workbook_complexity_usa_thresholds_de_config`
 
 ### Testes de integração
 

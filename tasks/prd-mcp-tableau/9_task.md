@@ -26,13 +26,13 @@ cobertura global ≥80% (`--cov=mcp_tableau --cov-fail-under=80`). Atualiza docu
 
 ## Subtarefas
 
-- [ ] 9.1 Implementar a suite de integração MCP in-memory (todas as tools registradas mockando as
+- [x] 9.1 Implementar a suite de integração MCP in-memory (todas as tools registradas mockando as
   camadas `tableau/*`).
-- [ ] 9.2 Marcar e isolar testes de integração com Tableau real (`@pytest.mark.integration`) fora
+- [x] 9.2 Marcar e isolar testes de integração com Tableau real (`@pytest.mark.integration`) fora
   da suite rápida (publish/download roundtrip, render PNG, lineage).
-- [ ] 9.3 Configurar `pytest-cov` com `--cov=mcp_tableau --cov-fail-under=80` e fechar lacunas de
+- [x] 9.3 Configurar `pytest-cov` com `--cov=mcp_tableau --cov-fail-under=80` e fechar lacunas de
   cobertura.
-- [ ] 9.4 Atualizar `AGENTS.md`/`README.md` com dependências e instruções de execução do servidor.
+- [x] 9.4 Atualizar `AGENTS.md`/`README.md` com dependências e instruções de execução do servidor.
 
 ## Detalhes de implementação
 
@@ -57,16 +57,16 @@ marcada, E2E smoke opcional), § "Dependências técnicas" e § "Arquivos releva
 ### Testes de integração
 
 Integração MCP in-memory (suite rápida):
-- [ ] `test_mcp_todas_ferramentas_registradas_e_descobriveis`
-- [ ] `test_mcp_publish_workbook_contrato_de_entrada_e_saida_serializa`
-- [ ] `test_mcp_render_view_image_retorna_bloco_imagem_e_json`
-- [ ] `test_mcp_ferramenta_em_erro_retorna_toolerror_serializado`
-- [ ] `test_mcp_docstrings_presentes_em_todas_ferramentas`
+- [x] `test_mcp_todas_ferramentas_registradas_e_descobriveis`
+- [x] `test_mcp_publish_workbook_contrato_de_entrada_e_saida_serializa`
+- [x] `test_mcp_render_view_image_retorna_bloco_imagem_e_json`
+- [x] `test_mcp_ferramenta_em_erro_retorna_toolerror_serializado`
+- [x] `test_mcp_docstrings_presentes_em_todas_ferramentas`
 
 Integração com Tableau real (`@pytest.mark.integration`, fora da suite rápida):
-- [ ] `test_integration_publish_e_download_roundtrip`
-- [ ] `test_integration_render_view_image_retorna_png_valido`
-- [ ] `test_integration_metadata_lineage_responde`
+- [x] `test_integration_publish_e_download_roundtrip`
+- [x] `test_integration_render_view_image_retorna_png_valido`
+- [x] `test_integration_metadata_lineage_responde`
 
 ### Testes E2E (se aplicável)
 

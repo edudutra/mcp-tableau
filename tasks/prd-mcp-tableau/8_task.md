@@ -28,14 +28,14 @@ para consumo multimodal; `render_workbook_pdf` renderiza o PDF de uma ou mais p�
 
 ## Subtarefas
 
-- [ ] 8.1 `render_view_image(view_id, filters={}, high_res=true)`: converter `filters` em `vf_`,
+- [x] 8.1 `render_view_image(view_id, filters={}, high_res=true)`: converter `filters` em `vf_`,
   chamar `render_view_image` do client, aplicar `detect_blank_render` e retornar
   `RenderImageResult` + bloco de imagem PNG (`fastmcp.utilities.types.Image`).
-- [ ] 8.2 Garantir que `severity="error"` (tela em branco) **não** falha a ferramenta; a imagem é
+- [x] 8.2 Garantir que `severity="error"` (tela em branco) **não** falha a ferramenta; a imagem é
   sempre devolvida para confirmação multimodal.
-- [ ] 8.3 `render_workbook_pdf(view_id, filters={}, page_type="A4")`: renderizar PDF e retornar
+- [x] 8.3 `render_workbook_pdf(view_id, filters={}, page_type="A4")`: renderizar PDF e retornar
   status + bloco PDF.
-- [ ] 8.4 Mapear view inexistente → `NOT_FOUND` e falha de render → `RENDER_FAILED`/
+- [x] 8.4 Mapear view inexistente → `NOT_FOUND` e falha de render → `RENDER_FAILED`/
   `UPSTREAM_ERROR`; registrar as tools no `server.py`.
 
 ## Detalhes de implementação
@@ -56,13 +56,13 @@ Ver techspec.md § "Endpoints da API" → `render_view_image`, `render_workbook_
 
 ### Testes unitários
 
-- [ ] `test_render_view_image_sucesso_retorna_result_e_bloco_imagem`
-- [ ] `test_render_view_image_aplica_filtros_vf_no_request_options`
-- [ ] `test_render_view_image_tela_em_branco_define_severity_error_sem_falhar`
-- [ ] `test_render_view_image_view_inexistente_retorna_not_found`
-- [ ] `test_render_view_image_falha_render_retorna_render_failed`
-- [ ] `test_render_workbook_pdf_sucesso_retorna_bloco_pdf`
-- [ ] `test_render_workbook_pdf_page_type_default_a4`
+- [x] `test_render_view_image_sucesso_retorna_result_e_bloco_imagem`
+- [x] `test_render_view_image_aplica_filtros_vf_no_request_options`
+- [x] `test_render_view_image_tela_em_branco_define_severity_error_sem_falhar`
+- [x] `test_render_view_image_view_inexistente_retorna_not_found`
+- [x] `test_render_view_image_falha_render_retorna_render_failed`
+- [x] `test_render_workbook_pdf_sucesso_retorna_bloco_pdf`
+- [x] `test_render_workbook_pdf_page_type_default_a4`
 
 ### Testes de integração
 

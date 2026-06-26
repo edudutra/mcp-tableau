@@ -8,18 +8,23 @@ capacidades vão sendo implementadas (Tarefas 5.0–8.0).
 
 from fastmcp import FastMCP
 
+from mcp_tableau.tools import deploy, metadata, qa, visual
+
 mcp: FastMCP = FastMCP(name="mcp-tableau")
 
 
 def register_tools() -> None:
     """Registra todas as ferramentas MCP na instância única do servidor.
 
-    Ponto único de registro. À medida que as capacidades são implementadas,
-    cada módulo de ``tools/`` é importado aqui e tem suas ferramentas
-    registradas em `mcp`.
+    Ponto único de registro. Cada módulo de ``tools/`` expõe ``register(mcp)``
+    e é acoplado aqui, cobrindo as quatro capacidades do produto: deploy
+    (Capacidade 1), visual (Capacidade 2), QA estrutural (Capacidade 3) e
+    metadados/linhagem (Capacidade 4).
     """
-    # As ferramentas das Capacidades 1–4 são registradas nas tarefas seguintes.
-    return
+    deploy.register(mcp)
+    visual.register(mcp)
+    qa.register(mcp)
+    metadata.register(mcp)
 
 
 def run() -> None:
