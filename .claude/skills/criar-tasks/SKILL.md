@@ -37,6 +37,7 @@ A funcionalidade em que você trabalhará é identificada por este slug:
 - Organizar a sequência
 - **Cada tarefa deve ser uma entrega bem definida**
 - **Todas as tarefas devem ter seu próprio conjunto de testes unitários e de integração**
+- **Mapear dependências entre as tarefas e identificar o que pode rodar em paralelo** (preencher a seção "Sequenciamento e Paralelismo" do <tasks_template>, incluindo a tabela de dependências, as ondas de execução e o diagrama Mermaid)
 
 3. **Gerar arquivos individuais de tarefas**
 
