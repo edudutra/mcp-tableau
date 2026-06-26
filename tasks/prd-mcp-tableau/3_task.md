@@ -29,13 +29,13 @@ upstream são normalizados para `null`.
 
 ## Subtarefas
 
-- [ ] 3.1 Implementar `downstream_of_datasource(datasource_luid)` — query GraphQL
+- [x] 3.1 Implementar `downstream_of_datasource(datasource_luid)` — query GraphQL
   `downstreamWorkbooks` e parsing para estrutura atribuível.
-- [ ] 3.2 Implementar `upstream_of_workbook(workbook_luid)` — query GraphQL
+- [x] 3.2 Implementar `upstream_of_workbook(workbook_luid)` — query GraphQL
   `upstreamDatasources` (suportando workbook/datasource).
-- [ ] 3.3 Implementar `datasource_dictionary(datasource_luid)` — query
+- [x] 3.3 Implementar `datasource_dictionary(datasource_luid)` — query
   `fields { name formula description }`, normalizando ausentes para `null`.
-- [ ] 3.4 Reaproveitar a sessão/credencial do `TableauClient` (POST GraphQL único, sem paginação
+- [x] 3.4 Reaproveitar a sessão/credencial do `TableauClient` (POST GraphQL único, sem paginação
   manual no MVP) e mapear erro GraphQL/`EndpointUnavailableError` para `UPSTREAM_ERROR`.
 
 ## Detalhes de implementação
@@ -57,8 +57,8 @@ aqui as funções retornam os dados parseados.
 
 ### Testes unitários
 
-- [ ] `test_metadata_query_monta_graphql_e_parseia_resposta`
-- [ ] `test_metadata_erro_graphql_vira_upstream_error`
+- [x] `test_metadata_query_monta_graphql_e_parseia_resposta`
+- [x] `test_metadata_erro_graphql_vira_upstream_error`
 
 ### Testes de integração
 

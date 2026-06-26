@@ -30,18 +30,18 @@ Abstrai diferenças entre Tableau Cloud e Server.
 
 ## Subtarefas
 
-- [ ] 2.1 Implementar sign-in/sign-out PAT com context manager (sign-out garantido mesmo em erro)
+- [x] 2.1 Implementar sign-in/sign-out PAT com context manager (sign-out garantido mesmo em erro)
   usando a `Settings` da Tarefa 1.0.
-- [ ] 2.2 Implementar re-autenticação lazy: ao detectar token expirado/401, re-autenticar e
+- [x] 2.2 Implementar re-autenticação lazy: ao detectar token expirado/401, re-autenticar e
   repetir a operação **uma vez**.
-- [ ] 2.3 Implementar `publish_workbook`/`publish_datasource` com `PublishMode` (Create/Overwrite)
+- [x] 2.3 Implementar `publish_workbook`/`publish_datasource` com `PublishMode` (Create/Overwrite)
   e chunking automático >64 MB; expor flag `chunked` no resultado.
-- [ ] 2.4 Implementar `download_workbook` (artefato para diretório destino) e
+- [x] 2.4 Implementar `download_workbook` (artefato para diretório destino) e
   `render_view_image`/`render_view_pdf` com `ImageRequestOptions`/`PDFRequestOptions`
   (filtros `vf_`, `resolution=high`, `page_type`).
-- [ ] 2.5 Implementar `find_project_id` (resolução por nome) e `search_content` (listagem com
+- [x] 2.5 Implementar `find_project_id` (resolução por nome) e `search_content` (listagem com
   paginação completa).
-- [ ] 2.6 Implementar tradução de exceções TSC (`ServerResponseError` 401/403/404,
+- [x] 2.6 Implementar tradução de exceções TSC (`ServerResponseError` 401/403/404,
   `NotSignedInError`, `EndpointUnavailableError`) para códigos `ToolError`
   (`AUTH_FAILED`, `PERMISSION_DENIED`, `NOT_FOUND`, `PAYLOAD_TOO_LARGE`, `UPSTREAM_ERROR`),
   garantindo que o PAT nunca apareça em mensagens.
@@ -65,13 +65,13 @@ Ver techspec.md § "Principais interfaces" (assinaturas de `TableauClient`),
 
 ### Testes unitários
 
-- [ ] `test_client_sign_in_usa_pat_da_config`
-- [ ] `test_client_sign_out_garantido_mesmo_em_erro`
-- [ ] `test_client_token_expirado_dispara_reauth_e_repete_uma_vez`
-- [ ] `test_client_traduz_serverresponseerror_404_para_not_found`
-- [ ] `test_client_traduz_403_para_permission_denied`
-- [ ] `test_client_nunca_inclui_pat_em_mensagem_de_erro`
-- [ ] `test_client_paginacao_lista_todo_o_conteudo`
+- [x] `test_client_sign_in_usa_pat_da_config`
+- [x] `test_client_sign_out_garantido_mesmo_em_erro`
+- [x] `test_client_token_expirado_dispara_reauth_e_repete_uma_vez`
+- [x] `test_client_traduz_serverresponseerror_404_para_not_found`
+- [x] `test_client_traduz_403_para_permission_denied`
+- [x] `test_client_nunca_inclui_pat_em_mensagem_de_erro`
+- [x] `test_client_paginacao_lista_todo_o_conteudo`
 
 ### Testes de integração
 

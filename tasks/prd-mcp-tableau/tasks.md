@@ -3,9 +3,9 @@
 ## Tarefas
 
 - [x] 1.0 Fundação do projeto (config, models, server, dependências)
-- [ ] 2.0 Camada de integração REST (`tableau/client.py`)
-- [ ] 3.0 Camada de integração GraphQL (`tableau/metadata.py`)
-- [ ] 4.0 Camada de validação pura (`validation/*`)
+- [x] 2.0 Camada de integração REST (`tableau/client.py`)
+- [x] 3.0 Camada de integração GraphQL (`tableau/metadata.py`)
+- [x] 4.0 Camada de validação pura (`validation/*`)
 - [ ] 5.0 Tools — Capacidade 1 Deploy (`tools/deploy.py`)
 - [ ] 6.0 Tools — Capacidade 4 Metadados (`tools/metadata.py`)
 - [ ] 7.0 Tools — Capacidade 3 QA (`tools/qa.py`)

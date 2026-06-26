@@ -31,17 +31,17 @@ construídas em paralelo às camadas de integração.
 
 ## Subtarefas
 
-- [ ] 4.1 `validation/structure.py` — `inspect_structure(path)`: parse de `.twb`/`.twbx` via
+- [x] 4.1 `validation/structure.py` — `inspect_structure(path)`: parse de `.twb`/`.twbx` via
   `tableaudocumentapi`; extrair worksheets, dashboards, conexões, campos (com fórmula) e
   filtros; detectar campos quebrados, filtros sem lógica e conexões inválidas como `issues`
   (sem falhar); tratar XML corrompido com erro tratável.
-- [ ] 4.2 `validation/complexity.py` — `audit_complexity(report, thresholds)`: comparar métricas
+- [x] 4.2 `validation/complexity.py` — `audit_complexity(report, thresholds)`: comparar métricas
   contra limiares, acumular `findings` e definir `compliant`; valores no limite exato não geram
   finding.
-- [ ] 4.3 `validation/visual.py` — `detect_blank_render(image_bytes)`: heurística de
+- [x] 4.3 `validation/visual.py` — `detect_blank_render(image_bytes)`: heurística de
   uniformidade/branco com Pillow retornando `VisualDiagnostic` (`is_likely_blank`,
   `blank_ratio` 0–1, `severity`, `message`); bytes inválidos levantam erro tratável.
-- [ ] 4.4 `validation/similarity.py` — `rank_similar(term, candidates, limit)`: ranking fuzzy
+- [x] 4.4 `validation/similarity.py` — `rank_similar(term, candidates, limit)`: ranking fuzzy
   decrescente por `score`, match exato com score máximo, case/acento-insensível, respeitando
   `limit`; lista vazia quando sem candidatos.
 
@@ -65,40 +65,40 @@ e § "Principais decisões" (QA híbrido, inspeção visual em duas camadas, sim
 ### Testes unitários
 
 `validation/structure.py`:
-- [ ] `test_inspect_structure_workbook_valido_lista_worksheets_e_dashboards`
-- [ ] `test_inspect_structure_extrai_campos_calculados_com_formula`
-- [ ] `test_inspect_structure_campo_calculado_referencia_inexistente_marca_broken_field`
-- [ ] `test_inspect_structure_filtro_sem_logica_gera_issue_warning`
-- [ ] `test_inspect_structure_conexao_invalida_gera_issue`
-- [ ] `test_inspect_structure_workbook_sem_issues_retorna_lista_vazia`
-- [ ] `test_inspect_structure_twbx_compactado_e_twb_puro_produzem_mesma_estrutura`
-- [ ] `test_inspect_structure_arquivo_xml_corrompido_levanta_erro_tratavel`
+- [x] `test_inspect_structure_workbook_valido_lista_worksheets_e_dashboards`
+- [x] `test_inspect_structure_extrai_campos_calculados_com_formula`
+- [x] `test_inspect_structure_campo_calculado_referencia_inexistente_marca_broken_field`
+- [x] `test_inspect_structure_filtro_sem_logica_gera_issue_warning`
+- [x] `test_inspect_structure_conexao_invalida_gera_issue`
+- [x] `test_inspect_structure_workbook_sem_issues_retorna_lista_vazia`
+- [x] `test_inspect_structure_twbx_compactado_e_twb_puro_produzem_mesma_estrutura`
+- [x] `test_inspect_structure_arquivo_xml_corrompido_levanta_erro_tratavel`
 
 `validation/complexity.py`:
-- [ ] `test_audit_complexity_dentro_dos_limiares_compliant_true`
-- [ ] `test_audit_complexity_excesso_de_filtros_gera_finding_warning`
-- [ ] `test_audit_complexity_excesso_de_worksheets_gera_finding`
-- [ ] `test_audit_complexity_multiplos_estouros_acumula_findings`
-- [ ] `test_audit_complexity_thresholds_customizados_alteram_resultado`
-- [ ] `test_audit_complexity_valores_no_limite_exato_nao_geram_finding`
+- [x] `test_audit_complexity_dentro_dos_limiares_compliant_true`
+- [x] `test_audit_complexity_excesso_de_filtros_gera_finding_warning`
+- [x] `test_audit_complexity_excesso_de_worksheets_gera_finding`
+- [x] `test_audit_complexity_multiplos_estouros_acumula_findings`
+- [x] `test_audit_complexity_thresholds_customizados_alteram_resultado`
+- [x] `test_audit_complexity_valores_no_limite_exato_nao_geram_finding`
 
 `validation/visual.py`:
-- [ ] `test_detect_blank_render_imagem_uniforme_branca_is_likely_blank_true`
-- [ ] `test_detect_blank_render_imagem_com_conteudo_is_likely_blank_false`
-- [ ] `test_detect_blank_render_blank_ratio_entre_zero_e_um`
-- [ ] `test_detect_blank_render_severity_error_quando_acima_do_limiar`
-- [ ] `test_detect_blank_render_bytes_invalidos_levanta_erro_tratavel`
+- [x] `test_detect_blank_render_imagem_uniforme_branca_is_likely_blank_true`
+- [x] `test_detect_blank_render_imagem_com_conteudo_is_likely_blank_false`
+- [x] `test_detect_blank_render_blank_ratio_entre_zero_e_um`
+- [x] `test_detect_blank_render_severity_error_quando_acima_do_limiar`
+- [x] `test_detect_blank_render_bytes_invalidos_levanta_erro_tratavel`
 
 `validation/similarity.py`:
-- [ ] `test_rank_similar_ordena_por_score_decrescente`
-- [ ] `test_rank_similar_match_exato_score_maximo`
-- [ ] `test_rank_similar_sem_candidatos_retorna_lista_vazia`
-- [ ] `test_rank_similar_respeita_limit`
-- [ ] `test_rank_similar_case_insensitive_e_acentos`
+- [x] `test_rank_similar_ordena_por_score_decrescente`
+- [x] `test_rank_similar_match_exato_score_maximo`
+- [x] `test_rank_similar_sem_candidatos_retorna_lista_vazia`
+- [x] `test_rank_similar_respeita_limit`
+- [x] `test_rank_similar_case_insensitive_e_acentos`
 
 ### Testes de integração
 
-- [ ] Não aplicável (funções puras; integração das tools coberta nas Tarefas 7.0/8.0/6.0 e 9.0).
+- [x] Não aplicável (funções puras; integração das tools coberta nas Tarefas 7.0/8.0/6.0 e 9.0).
 
 ## Arquivos relevantes
 
