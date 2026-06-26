@@ -1,0 +1,12 @@
+{
+  "name": "finalize-screenshots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "capture": "node capture-screenshots.mjs",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.51.0"
+  }
+}
