@@ -1,6 +1,6 @@
 ---
 name: executar-bugfix
-description: Leia o relatório de bugs de uma feature, analise e corrija cada defeito na causa raiz, crie testes de regressão, valide bugs visuais com Playwright MCP e gere o relatório final de correções. Use sempre que o usuário pedir para corrigir bugs, executar bugfix, tratar defeitos do bugs.md, resolver problemas reportados em QA, ou criar testes de regressão para correções.
+description: Leia o relatório de bugs de uma feature, analise e corrija cada defeito na causa raiz, crie testes de regressão, valide bugs visuais com Playwright MCP quando aplicável e gere o relatório final de correções. Use sempre que o usuário pedir para corrigir bugs, executar bugfix, tratar defeitos do bugs.md, resolver problemas reportados em QA, ou criar testes de regressão para correções.
 ---
 
 <prd>`--prd`</prd>

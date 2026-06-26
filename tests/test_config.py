@@ -1,5 +1,7 @@
 """Testes unitários de `mcp_tableau.config`."""
 
+from pathlib import Path
+
 import pytest
 
 from mcp_tableau.config import ConfigError, Settings, load_settings
@@ -18,7 +20,13 @@ def test_settings_carrega_variaveis_obrigatorias(
 
 def test_settings_variavel_faltante_levanta_erro_claro(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    # Regressão BUG-01: o teste precisa ser hermético. Sem isolar o `env_file`, um
+    # `.env` real na raiz do repo repovoa as credenciais e o erro não ocorre
+    # ("DID NOT RAISE"). `chdir` para um diretório sem `.env` neutraliza essa leitura
+    # (o `Settings` resolve `env_file=".env"` relativo ao cwd).
+    monkeypatch.chdir(tmp_path)
     for key in ("TABLEAU_SERVER_URL", "TABLEAU_PAT_NAME", "TABLEAU_PAT_SECRET"):
         monkeypatch.delenv(key, raising=False)
 
@@ -55,6 +63,19 @@ def test_settings_thresholds_override_por_env(
     assert thresholds.max_filters == 30
     assert thresholds.max_worksheets == 40
     assert thresholds.max_data_sources == 8
+
+
+def test_settings_ca_bundle_default_vazio(tableau_env: dict[str, str]) -> None:
+    # Sem TABLEAU_CA_BUNDLE, usa-se o store padrão do certifi (string vazia).
+    assert load_settings().ca_bundle == ""
+
+
+def test_settings_ca_bundle_override_por_env(
+    tableau_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TABLEAU_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+
+    assert load_settings().ca_bundle == "/etc/ssl/certs/ca-certificates.crt"
 
 
 def test_settings_secret_nao_aparece_em_repr(tableau_env: dict[str, str]) -> None:

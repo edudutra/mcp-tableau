@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Tempo limite de requisições à API (segundos)
     request_timeout: int = Field(default=30, validation_alias="TABLEAU_TIMEOUT")
 
+    # CA bundle opcional para verificação TLS (rede corporativa com CA própria).
+    # Caminho para um arquivo PEM; vazio = usa o store padrão do `certifi`.
+    ca_bundle: str = Field(default="", validation_alias="TABLEAU_CA_BUNDLE")
+
     # Limiares de complexidade (override por env)
     max_filters: int = Field(default=15, validation_alias="MAX_FILTERS")
     max_worksheets: int = Field(default=20, validation_alias="MAX_WORKSHEETS")

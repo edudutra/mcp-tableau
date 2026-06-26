@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import requests.exceptions
 import tableauserverclient as TSC
 from tableauserverclient.server.endpoint.exceptions import (
     InternalServerError,
@@ -150,6 +151,21 @@ def _translate(exc: Exception) -> TableauClientError:
             ErrorCode.UPSTREAM_ERROR,
             "Falha ao comunicar com o Tableau. Tente novamente.",
         )
+    # Erros de transporte do `requests` (TLS/conexão) não são `ServerResponseError`;
+    # sem este tratamento cairiam no fallback genérico e mascarariam a causa real
+    # (ex.: CA corporativa não confiável em rede com interceptação TLS).
+    if isinstance(exc, requests.exceptions.SSLError):
+        return TableauClientError(
+            ErrorCode.UPSTREAM_ERROR,
+            "Falha de TLS ao conectar ao Tableau (certificado não confiável). "
+            "Verifique o CA bundle da rede (TABLEAU_CA_BUNDLE) ou o proxy corporativo.",
+        )
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return TableauClientError(
+            ErrorCode.UPSTREAM_ERROR,
+            "Falha de conexão de rede com o Tableau. Verifique a URL do servidor, "
+            "a conectividade e o proxy/CA bundle (TABLEAU_CA_BUNDLE).",
+        )
     return TableauClientError(
         ErrorCode.UPSTREAM_ERROR,
         "Falha inesperada ao comunicar com o Tableau.",
@@ -170,7 +186,12 @@ class TableauClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._server = TSC.Server(settings.server_url, use_server_version=True)
-        self._server.add_http_options({"timeout": settings.request_timeout})
+        http_options: dict[str, object] = {"timeout": settings.request_timeout}
+        # CA bundle corporativo opcional: aponta a verificação TLS do `requests`
+        # para o PEM configurado em vez do store padrão do `certifi`.
+        if settings.ca_bundle:
+            http_options["verify"] = settings.ca_bundle
+        self._server.add_http_options(http_options)
 
     # -- Ciclo de vida da sessão ------------------------------------------------
 

@@ -44,6 +44,15 @@ MCP-Superstore…”) que o `python-dotenv` não consegue parsear, gerando vári
 `WARNING ... could not parse statement`. Recomenda-se mover essas anotações para fora do
 `.env` (ex.: `.env.integration` já documenta os IDs em comentários) ou comentá-las.
 
+- **Status:** Corrigido
+- **Correção aplicada:** o teste `test_settings_variavel_faltante_levanta_erro_claro`
+  passou a usar `monkeypatch.chdir(tmp_path)`, isolando a leitura de `env_file=".env"`
+  (cwd sem `.env`) — agora é hermético independentemente do `.env` do desenvolvedor. O
+  texto livre do `.env` foi comentado, eliminando os `WARNING could not parse statement`.
+- **Testes de regressão:** `tests/test_config.py::test_settings_variavel_faltante_levanta_erro_claro`
+  (corrigido para ser hermético; falha se a isolação do `env_file` for revertida e houver
+  um `.env` em disco).
+
 ---
 
 ## BUG-02 — Erro TLS de CA corporativa mascarado como `UPSTREAM_ERROR` genérico; sem config de CA bundle
@@ -90,6 +99,20 @@ orienta o usuário/agente sobre a causa real.
   mapeando para `UPSTREAM_ERROR` com mensagem acionável (ex.: "Falha de TLS/conexão com
   o Tableau; verifique CA bundle/proxy de rede.").
 
+- **Status:** Corrigido
+- **Correção aplicada:** (1) nova config opcional `TABLEAU_CA_BUNDLE` em `config.py`,
+  propagada ao TSC via `add_http_options({"verify": ca_bundle})` no `TableauClient`;
+  (2) `_translate` passou a tratar `requests.exceptions.SSLError` e `ConnectionError`,
+  mapeando para `UPSTREAM_ERROR` com mensagem acionável que cita TLS/CA/`TABLEAU_CA_BUNDLE`
+  e proxy. `.env.example` atualizado com a nova variável.
+- **Testes de regressão:**
+  `tests/tableau/test_client.py::test_client_traduz_sslerror_para_upstream_com_mensagem_acionavel`,
+  `::test_client_traduz_connectionerror_para_upstream_com_mensagem_acionavel`,
+  `::test_client_ca_bundle_configura_verify_no_tsc`,
+  `::test_client_sem_ca_bundle_nao_define_verify`,
+  `tests/test_config.py::test_settings_ca_bundle_default_vazio`,
+  `::test_settings_ca_bundle_override_por_env`.
+
 ---
 
 ## BUG-03 — Teste de integração de linhagem com asserção fraca + IDs de sandbox desatualizados
@@ -130,3 +153,14 @@ problema é o **dado de teste desatualizado** + a **asserção fraca** que escon
 - Fortalecer a asserção: exigir `status == "success"` (com `direction` correto) para um
   LUID sabidamente existente, mantendo a tolerância a `UPSTREAM_ERROR` apenas para o
   cenário de degradação Cloud/Server (RF24) explicitamente separado.
+
+- **Status:** Corrigido
+- **Correção aplicada:** (1) `TABLEAU_IT_DATASOURCE_ID` atualizado em `.env.integration`
+  (e `.env`) para o LUID indexado `18e985e3-e838-469d-a103-bca7aa3dfe92` ("Superstore
+  Datasource"), com o LUID antigo `88cd5bf4-…` (que retornava `NOT_FOUND`) substituído;
+  (2) asserção fortalecida em `test_integration_metadata_lineage_responde`: exige
+  `status == "success"` com `direction == "downstream"` e `root` resolvido, tolerando
+  apenas `UPSTREAM_ERROR` (degradação RF24) — `NOT_FOUND` passa a falhar o teste.
+- **Testes de regressão:**
+  `tests/integration/test_tableau_real.py::test_integration_metadata_lineage_responde`
+  (asserção reforçada; requer Tableau real via `pytest -m integration`).

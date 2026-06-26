@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from mcp_tableau.config import load_settings
-from mcp_tableau.models import PublishResult, RenderImageResult
+from mcp_tableau.models import ErrorCode, PublishResult, RenderImageResult
 from mcp_tableau.tableau.client import tableau_session
 from mcp_tableau.tools import deploy, metadata, visual
 
@@ -76,10 +76,28 @@ def test_integration_render_view_image_retorna_png_valido() -> None:
 
 
 def test_integration_metadata_lineage_responde() -> None:
-    """Consulta a linhagem descendente de uma fonte de dados real via Metadata API."""
+    """Consulta a linhagem descendente de uma fonte de dados real via Metadata API.
+
+    Regressão BUG-03: a asserção anterior (`status in {"success", "error"}`) passava
+    mesmo quando a linhagem falhava — mascarando LUIDs de sandbox desatualizados que
+    retornavam ``NOT_FOUND``. Para um LUID sabidamente indexado exigimos
+    ``status == "success"`` com ``direction`` correto e ``root`` resolvido.
+    """
     datasource_id = _required_env("TABLEAU_IT_DATASOURCE_ID")
 
     result = metadata.get_downstream_lineage(datasource_id)
-    # Sucesso com dependências (possivelmente vazias) ou degradação acionável (RF24).
     status = getattr(result, "status", None)
-    assert status in {"success", "error"}
+
+    # RF24: em Cloud/Server sem Metadata API a degradação é tolerada, mas APENAS como
+    # UPSTREAM_ERROR explícito. NOT_FOUND aqui indicaria o defeito original
+    # (dado de teste desatualizado), então não é aceito.
+    if status == "error":
+        assert result.error.code is ErrorCode.UPSTREAM_ERROR, (
+            f"Linhagem falhou com {result.error.code}; verifique se "
+            "TABLEAU_IT_DATASOURCE_ID existe na Metadata API (BUG-03)."
+        )
+        return
+
+    assert status == "success"
+    assert result.direction == "downstream"
+    assert result.root.id, "root da linhagem não foi resolvido"

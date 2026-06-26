@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import requests.exceptions
 import tableauserverclient as TSC
 from tableauserverclient.server.endpoint.exceptions import (
     NotSignedInError,
@@ -238,6 +239,68 @@ def test_client_sign_in_falho_nao_vaza_segredo(
 
     assert exc_info.value.code is ErrorCode.AUTH_FAILED
     assert secret not in exc_info.value.message
+
+
+# -- TLS / CA bundle (regressão BUG-02) ----------------------------------------
+
+
+def test_client_traduz_sslerror_para_upstream_com_mensagem_acionavel(
+    client: TableauClient, server: MagicMock
+) -> None:
+    # Regressão BUG-02: erro de TLS (CA corporativa não confiável) não é um
+    # ServerResponseError; sem tratamento explícito caía no fallback genérico
+    # "Falha inesperada", sem orientar a causa real.
+    server.auth.sign_in.side_effect = requests.exceptions.SSLError(
+        "self-signed certificate in certificate chain"
+    )
+
+    with pytest.raises(TableauClientError) as exc_info:
+        client.sign_in()
+
+    assert exc_info.value.code is ErrorCode.UPSTREAM_ERROR
+    mensagem = exc_info.value.message
+    assert "TLS" in mensagem
+    assert "TABLEAU_CA_BUNDLE" in mensagem
+    assert "inesperada" not in mensagem
+
+
+def test_client_traduz_connectionerror_para_upstream_com_mensagem_acionavel(
+    client: TableauClient, server: MagicMock
+) -> None:
+    server.auth.sign_in.side_effect = requests.exceptions.ConnectionError(
+        "Connection refused"
+    )
+
+    with pytest.raises(TableauClientError) as exc_info:
+        client.sign_in()
+
+    assert exc_info.value.code is ErrorCode.UPSTREAM_ERROR
+    assert "conexão" in exc_info.value.message.lower()
+
+
+def test_client_ca_bundle_configura_verify_no_tsc(
+    server: MagicMock, tableau_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regressão BUG-02: a aplicação precisa expor configuração de CA bundle.
+    monkeypatch.setenv("TABLEAU_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+    monkeypatch.setattr(TSC, "Server", lambda *a, **k: server)
+
+    TableauClient(Settings())  # type: ignore[call-arg]
+
+    enviados = [chamada.args[0] for chamada in server.add_http_options.call_args_list]
+    assert any(
+        opt.get("verify") == "/etc/ssl/certs/ca-certificates.crt" for opt in enviados
+    )
+
+
+def test_client_sem_ca_bundle_nao_define_verify(
+    client: TableauClient, server: MagicMock
+) -> None:
+    # `client` usa Settings sem TABLEAU_CA_BUNDLE: o `verify` padrão do certifi é
+    # mantido (nenhum override é enviado ao TSC).
+    enviados = [chamada.args[0] for chamada in server.add_http_options.call_args_list]
+    assert enviados  # add_http_options foi chamado (timeout)
+    assert all("verify" not in opt for opt in enviados)
 
 
 # -- Publicação ----------------------------------------------------------------

@@ -2,13 +2,13 @@
 
 ## Resumo
 - Data: 2026-06-26
-- Status: **APROVADO COM RESSALVAS**
+- Status: **APROVADO** (3 bugs encontrados na QA foram corrigidos — ver `bugfixes.md`)
 - Total de Requisitos (RF): 24
 - Requisitos Atendidos: 24 (verificados; 0 reprovados)
-- Bugs Encontrados: 3 (1 médio, 2 baixos) — nenhum bloqueante de produto
-- Cobertura de testes: **93,31%** (meta ≥ 80%)
-- Testes rápidos (unit + MCP in-memory): 125 passou / 1 falhou (defeito de isolamento de teste — BUG-01)
-- Testes de integração real (Tableau Cloud `dimensa-homologacao`): **3/3 passaram** (com CA bundle corporativo configurado)
+- Bugs Encontrados: 3 (1 médio, 2 baixos) — **todos corrigidos** (ver `bugfixes.md`)
+- Cobertura de testes: **93,76%** (meta ≥ 80%)
+- Testes rápidos (unit + MCP in-memory): **132 passou / 0 falhou** (BUG-01 corrigido; suite verde)
+- Testes de integração real (Tableau Cloud `dimensa-homologacao`): **3/3 passaram** (com CA bundle corporativo configurado; BUG-02 agora via `TABLEAU_CA_BUNDLE`)
 
 > **Natureza do produto:** servidor MCP headless (stdio), sem UI/frontend. Conforme a
 > própria TechSpec (§ Testes E2E), **Playwright/E2E de browser não se aplica**; a
@@ -61,16 +61,17 @@
 
 ### Suite rápida (unit + integração MCP in-memory)
 ```
-125 passou, 1 falhou, 3 deselecionados — cobertura 93,31% (meta ≥80%)
+132 passou, 0 falhou, 3 deselecionados — cobertura 93,76% (meta ≥80%)
 ```
-Único teste falho: `test_config.py::test_settings_variavel_faltante_levanta_erro_claro` → **BUG-01** (defeito de isolamento de teste, não do produto).
+O teste antes falho `test_config.py::test_settings_variavel_faltante_levanta_erro_claro`
+foi corrigido (**BUG-01**): tornou-se hermético via `monkeypatch.chdir(tmp_path)`.
 
 ### Integração real com Tableau Cloud (`pytest -m integration`)
 | Fluxo | Resultado | Observações |
 |-------|-----------|-------------|
 | `test_integration_publish_e_download_roundtrip` | PASSOU | Publicação + download roundtrip |
 | `test_integration_render_view_image_retorna_png_valido` | PASSOU | PNG com assinatura válida |
-| `test_integration_metadata_lineage_responde` | PASSOU | Asserção fraca — ver BUG-03 |
+| `test_integration_metadata_lineage_responde` | PASSOU | Asserção reforçada — BUG-03 corrigido (exige `success`/`direction`/`root`; LUID `18e985e3-…`) |
 
 ### Verificação manual ao vivo das 10 ferramentas MCP
 Todas as 10 ferramentas foram exercitadas contra o Tableau Cloud real (deploy, render
@@ -85,13 +86,13 @@ parâmetros e retornos) foi verificada via docstrings-contrato e modelos Pydanti
 consistentes (unit `test_mcp_docstrings_presentes_em_todas_ferramentas`).
 
 ## Bugs Encontrados
-Ver `bugs.md` para detalhes. Resumo:
+Ver `bugs.md` (detalhes) e `bugfixes.md` (correções). Resumo — **todos corrigidos**:
 
-| ID | Descrição | Severidade |
-|----|-----------|------------|
-| BUG-01 | Teste `test_settings_variavel_faltante_levanta_erro_claro` não é hermético: falha quando existe `.env` real no repo | Média |
-| BUG-02 | Cliente Tableau não confia na CA corporativa (usa `certifi`) e mascara erro TLS como `UPSTREAM_ERROR` genérico ("Falha inesperada"), sem opção de configurar CA bundle | Baixa |
-| BUG-03 | Teste de integração de linhagem tem asserção fraca (aceita `error`); IDs em `.env.integration` estão desatualizados (não existem na Metadata API) | Baixa |
+| ID | Descrição | Severidade | Status |
+|----|-----------|------------|--------|
+| BUG-01 | Teste `test_settings_variavel_faltante_levanta_erro_claro` não é hermético: falha quando existe `.env` real no repo | Média | Corrigido |
+| BUG-02 | Cliente Tableau não confia na CA corporativa (usa `certifi`) e mascara erro TLS como `UPSTREAM_ERROR` genérico ("Falha inesperada"), sem opção de configurar CA bundle | Baixa | Corrigido |
+| BUG-03 | Teste de integração de linhagem tem asserção fraca (aceita `error`); IDs em `.env.integration` estão desatualizados (não existem na Metadata API) | Baixa | Corrigido |
 
 ## Conclusão
 
@@ -101,14 +102,12 @@ quanto por exercício manual ao vivo das 10 ferramentas MCP contra um Tableau Cl
 As quatro capacidades (Deploy, Visual, QA estrutural, Metadados) funcionam ponta a ponta,
 incluindo os caminhos de erro acionáveis e a não-exposição de credenciais.
 
-O status é **APROVADO COM RESSALVAS** porque os 3 defeitos encontrados são de
-**qualidade de teste/configuração e robustez de ambiente**, não de funcionalidade do
-produto:
-- BUG-01 quebra a suite rápida no ambiente padrão de um desenvolvedor (com `.env`) e
-  deve ser corrigido para manter o portão de CI verde.
-- BUG-02 impede a conexão em rede corporativa sem workaround manual de CA bundle.
-- BUG-03 é uma asserção fraca + dados de teste desatualizados que mascaram regressões de
-  linhagem.
+Os 3 defeitos encontrados eram de **qualidade de teste/configuração e robustez de
+ambiente**, não de funcionalidade do produto, e **foram todos corrigidos** (ver
+`bugfixes.md`):
+- BUG-01 — suite rápida agora hermética (132 passou / 0 falhou) independentemente do `.env`.
+- BUG-02 — config `TABLEAU_CA_BUNDLE` + tradução acionável de erros TLS/conexão.
+- BUG-03 — LUID de sandbox atualizado (`18e985e3-…`) + asserção de linhagem reforçada.
 
-Recomenda-se corrigir BUG-01 (bloqueia CI) e BUG-03 antes do merge; BUG-02 pode ser
-tratado como melhoria de robustez (config de CA bundle / tradução de erro TLS).
+Status final: **APROVADO** — todos os RF atendidos, suite verde e correções com testes de
+regressão. Sem ressalvas pendentes.
