@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test/coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
+# Local environment
+.env

@@ -2,7 +2,7 @@
 
 ## Tarefas
 
-- [ ] 1.0 Fundação do projeto (config, models, server, dependências)
+- [x] 1.0 Fundação do projeto (config, models, server, dependências)
 - [ ] 2.0 Camada de integração REST (`tableau/client.py`)
 - [ ] 3.0 Camada de integração GraphQL (`tableau/metadata.py`)
 - [ ] 4.0 Camada de validação pura (`validation/*`)
