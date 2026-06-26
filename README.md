@@ -13,9 +13,10 @@ estruturados e auditáveis. As capacidades cobrem:
 - **QA estrutural** — ler campos, filtros e conexões; auditar complexidade contra boas práticas.
 - **Metadados** — linhagem ascendente/descendente, dicionário de dados e busca de similaridade.
 
-> ℹ️ Em desenvolvimento. A fundação (configuração, contratos Pydantic e bootstrap do
-> servidor) está concluída; as ferramentas de cada capacidade são adicionadas
-> incrementalmente. Veja [`tasks/prd-mcp-tableau/`](tasks/prd-mcp-tableau/).
+
+
+> 🚀 **Começando agora?** Veja o [**QUICKSTART**](QUICKSTART.md) para rodar o servidor
+> via `uvx` e configurar nos principais agentes (Claude, GitHub Copilot, Cursor, Kiro e outros).
 
 ## Stack
 

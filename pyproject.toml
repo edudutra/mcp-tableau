@@ -15,6 +15,9 @@ dependencies = [
     "rapidfuzz>=3.10",
 ]
 
+[project.scripts]
+mcp-tableau = "mcp_tableau.server:run"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
