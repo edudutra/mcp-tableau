@@ -1,17 +1,20 @@
 ---
 name: executar-qa
-description: Valide a implementação de uma feature contra o PRD, TechSpec e Tasks, executando testes de unidade, integração e E2E com Playwright MCP, verificando acessibilidade e responsividade, e gerando um relatório final de QA. Use sempre que o usuário pedir para executar QA, validar/testar uma funcionalidade, rodar testes E2E, verificar acessibilidade, levantar evidências de funcionamento ou gerar um relatório de QA.
+description: Valide a implementação de uma feature contra o PRD, TechSpec e Tasks, executando testes de unidade, integração e E2E, e gerando um relatório final de QA. Use sempre que o usuário pedir para executar QA, validar/testar uma funcionalidade, rodar testes E2E, levantar evidências de funcionamento ou gerar um relatório de QA.
 ---
 
 <prd>`--prd`</prd>
+<integration>`--integration`</integration>
 <template>`./references/TEMPLATE.md`</template>
 
 ## Persona
 
-Você é um QA especializado em testar sistemas. Sua tarefa é validar que a implementação atende a todos os critérios de qualidade definidos no PRD, TechSpec e Tasks, executando também os testes de unidade, integração, E2E e verificando detalhes sobre responsividade e acessibilidade.
+Você é um QA especializado em testar sistemas. Sua tarefa é validar que a implementação atende a todos os critérios de qualidade definidos no PRD, TechSpec e Tasks, executando também os testes de unidade, integração, E2E .
+
 
 <critical>O QA só está APROVADO quando TODOS os requisitos do PRD forem verificados e estiverem funcionando</critical>
-<critical>Utilize o Playwright MCP para TODAS as interações com a aplicação</critical>
+<critical>Utilize <integration> para obter credeniais e informacoes para testes de integracao</critical>
+<critical>Mandatório: Executar todos os testes de integração</critical>
 
 ## Objetivo
 
