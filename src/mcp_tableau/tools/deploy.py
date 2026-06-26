@@ -18,7 +18,11 @@ from fastmcp import FastMCP
 
 from mcp_tableau.config import load_settings
 from mcp_tableau.models import ContentType, ErrorCode, PublishResult, ToolError
-from mcp_tableau.tableau.client import TableauClientError, tableau_session
+from mcp_tableau.tableau.client import (
+    TableauClient,
+    TableauClientError,
+    tableau_session,
+)
 
 # Extensões aceitas por tipo de conteúdo publicável.
 _WORKBOOK_SUFFIXES = frozenset({".twb", ".twbx"})
@@ -135,7 +139,10 @@ def _publish(
 
 
 def _content_exists(
-    client, name: str, project_name: str, content_type: ContentType
+    client: TableauClient,
+    name: str,
+    project_name: str,
+    content_type: ContentType,
 ) -> bool:
     """Indica se já existe conteúdo de mesmo nome/tipo no projeto de destino.
 

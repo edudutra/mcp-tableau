@@ -21,10 +21,10 @@ sensíveis (código/summary da API).
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 import requests.exceptions
 import tableauserverclient as TSC
@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 
 # Limite de upload único do Tableau; acima disso o TSC particiona em chunks.
 CHUNK_THRESHOLD_BYTES = 64 * 1024 * 1024
+
+# Tipo de retorno genérico das operações encapsuladas por `_with_reauth`.
+T = TypeVar("T")
 
 # Tipos de página aceitos pela Query View PDF (espelha PDFRequestOptions.PageType).
 PageType = Literal[
@@ -233,7 +236,7 @@ class TableauClient:
 
     # -- Re-autenticação lazy ---------------------------------------------------
 
-    def _with_reauth(self, operation):  # type: ignore[no-untyped-def]
+    def _with_reauth(self, operation: Callable[[], T]) -> T:
         """Executa ``operation()`` e, em 401/sessão expirada, re-autentica e repete.
 
         A operação é repetida no máximo **uma** vez. Outros erros do TSC são

@@ -34,6 +34,11 @@ from mcp_tableau.validation.similarity import rank_similar
 _LIMIT_MIN = 1
 _LIMIT_MAX = 50
 
+# Tipos de conteúdo aceitos como raiz da linhagem ascendente. Apenas workbook é
+# suportado no MVP; datasource exige uma query GraphQL distinta (tabelas/bancos
+# upstream) ainda não implementada na camada `MetadataClient`.
+_UPSTREAM_CONTENT_TYPES = frozenset({"workbook"})
+
 
 def get_downstream_lineage(datasource_id: str) -> LineageResult | ToolError:
     """Lista os conteúdos que dependem de uma fonte de dados (linhagem descendente).
@@ -82,13 +87,24 @@ def get_upstream_lineage(
 
     Args:
         content_id: LUID do conteúdo raiz (workbook).
-        content_type: Tipo do conteúdo raiz; atualmente apenas `"workbook"`.
+        content_type: Tipo do conteúdo raiz; apenas `"workbook"` é suportado no
+            momento. Outros valores são recusados com `VALIDATION_ERROR`.
 
     Returns:
         `LineageResult` (`direction="upstream"`) em caso de sucesso, ou
-        `ToolError` (`NOT_FOUND` se o conteúdo não existe; `UPSTREAM_ERROR`,
-        `AUTH_FAILED`, etc. para falhas de comunicação).
+        `ToolError` (`VALIDATION_ERROR` se `content_type` não for suportado;
+        `NOT_FOUND` se o conteúdo não existe; `UPSTREAM_ERROR`, `AUTH_FAILED`,
+        etc. para falhas de comunicação).
     """
+    # Validação local ANTES de qualquer rede: não tratar silenciosamente um
+    # datasource como workbook (resultaria em NOT_FOUND/resultado incorreto).
+    if content_type not in _UPSTREAM_CONTENT_TYPES:
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            f"content_type '{content_type}' não suportado para linhagem "
+            "ascendente; use 'workbook'.",
+        )
+
     try:
         with tableau_session(load_settings()) as client:
             data = MetadataClient(client).upstream_of_workbook(content_id)

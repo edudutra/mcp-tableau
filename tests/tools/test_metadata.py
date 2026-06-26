@@ -156,6 +156,21 @@ def test_get_upstream_lineage_workbook_retorna_fontes(
     assert result.dependencies[0].type == "datasource"
 
 
+def test_get_upstream_lineage_content_type_nao_suportado_retorna_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Um datasource não pode ser tratado silenciosamente como workbook: deve ser
+    # recusado na validação local, sem instanciar o MetadataClient (sem rede).
+    factory = MagicMock(name="MetadataClient", side_effect=AssertionError("sem rede"))
+    monkeypatch.setattr(metadata, "MetadataClient", factory)
+
+    result = metadata.get_upstream_lineage("ds-1", content_type="datasource")
+
+    assert isinstance(result, ToolError)
+    assert result.error.code == ErrorCode.VALIDATION_ERROR
+    factory.assert_not_called()
+
+
 # get_datasource_dictionary -----------------------------------------------------
 
 
