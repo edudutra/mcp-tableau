@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from mcp_tableau.models import SheetRef
 from mcp_tableau.validation.structure import StructureParseError, inspect_structure
 
 
@@ -100,8 +101,10 @@ def test_inspect_structure_workbook_valido_lista_worksheets_e_dashboards(
     )
     report = inspect_structure(_write_twb(tmp_path, xml))
 
-    assert report.worksheets == ["Sheet 1"]
-    assert report.dashboards == ["Dashboard 1"]
+    assert [w.name for w in report.worksheets] == ["Sheet 1"]
+    assert [d.name for d in report.dashboards] == ["Dashboard 1"]
+    assert all(isinstance(w, SheetRef) for w in report.worksheets)
+    assert all(isinstance(d, SheetRef) for d in report.dashboards)
 
 
 def test_inspect_structure_extrai_campos_calculados_com_formula(
@@ -236,3 +239,70 @@ def test_inspect_structure_workbook_id_padrao_vazio_e_sobrescrevivel(
 
     assert inspect_structure(twb).workbook_id == ""
     assert inspect_structure(twb, workbook_id="luid-123").workbook_id == "luid-123"
+
+
+# -- Contrato SheetRef / worksheet_id (parsing puro, ids nulos) ----------------
+
+
+def test_inspect_structure_worksheets_viram_sheetref_id_none(tmp_path: Path) -> None:
+    xml = _workbook_xml(
+        columns=_COLUMNS_BASIC,
+        worksheets=_WORKSHEET_WITH_LOGIC,
+        dashboards=_DASHBOARD,
+    )
+    report = inspect_structure(_write_twb(tmp_path, xml))
+
+    assert report.worksheets, "esperava ao menos uma worksheet"
+    for ws in report.worksheets:
+        assert isinstance(ws, SheetRef)
+        assert ws.id is None
+    assert report.worksheets[0].name == "Sheet 1"
+
+
+def test_inspect_structure_dashboards_viram_sheetref_id_none(tmp_path: Path) -> None:
+    xml = _workbook_xml(
+        columns=_COLUMNS_BASIC,
+        worksheets=_WORKSHEET_WITH_LOGIC,
+        dashboards=_DASHBOARD,
+    )
+    report = inspect_structure(_write_twb(tmp_path, xml))
+
+    assert report.dashboards, "esperava ao menos um dashboard"
+    for db in report.dashboards:
+        assert isinstance(db, SheetRef)
+        assert db.id is None
+    assert report.dashboards[0].name == "Dashboard 1"
+
+
+def test_inspect_structure_filtros_worksheet_id_none(tmp_path: Path) -> None:
+    xml = _workbook_xml(
+        columns=_COLUMNS_BASIC,
+        worksheets=_WORKSHEET_WITH_LOGIC,
+        dashboards=_DASHBOARD,
+    )
+    report = inspect_structure(_write_twb(tmp_path, xml))
+
+    assert report.filters, "esperava ao menos um filtro"
+    assert all(f.worksheet_id is None for f in report.filters)
+
+
+def test_inspect_structure_permanece_puro_sem_rede(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Garante que o parsing não abre socket algum: qualquer tentativa de rede
+    # quebraria o teste. O parsing deve operar apenas sobre o arquivo local.
+    import socket
+
+    def _no_network(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("inspect_structure não deve abrir conexões de rede")
+
+    monkeypatch.setattr(socket, "socket", _no_network)
+
+    xml = _workbook_xml(
+        columns=_COLUMNS_BASIC + _COLUMN_CALC_OK,
+        worksheets=_WORKSHEET_WITH_LOGIC,
+        dashboards=_DASHBOARD,
+    )
+    report = inspect_structure(_write_twb(tmp_path, xml))
+
+    assert [w.name for w in report.worksheets] == ["Sheet 1"]

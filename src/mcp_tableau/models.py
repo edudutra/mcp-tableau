@@ -125,6 +125,7 @@ class FilterInfo(BaseModel):
     """Filtro declarado por worksheet."""
 
     worksheet: str
+    worksheet_id: str | None = None
     field: str
     kind: str
     has_logic: bool
@@ -139,13 +140,26 @@ class StructureIssue(BaseModel):
     detail: str
 
 
+class SheetRef(BaseModel):
+    """Referência a uma worksheet ou dashboard com LUID renderizável.
+
+    O campo `id` é o LUID da view aceito pelas ferramentas de render
+    (`render_view_image`/`render_view_pdf`). Pode ser `null` quando a sheet não
+    é uma view publicada (ex.: oculta) ou quando o enriquecimento via REST
+    falhou; nesses casos o `name` é sempre preservado.
+    """
+
+    id: str | None = None
+    name: str
+
+
 class StructureReport(BaseModel):
     """Estrutura interna do workbook e problemas detectados (RF13/RF14)."""
 
     status: Literal["success"] = "success"
     workbook_id: str
-    worksheets: list[str] = Field(default_factory=list)
-    dashboards: list[str] = Field(default_factory=list)
+    worksheets: list[SheetRef] = Field(default_factory=list)
+    dashboards: list[SheetRef] = Field(default_factory=list)
     connections: list[ConnectionInfo] = Field(default_factory=list)
     fields: list[FieldInfo] = Field(default_factory=list)
     filters: list[FilterInfo] = Field(default_factory=list)

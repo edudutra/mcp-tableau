@@ -8,6 +8,7 @@ from mcp_tableau.models import (
     ConnectionInfo,
     FieldInfo,
     FilterInfo,
+    SheetRef,
     StructureReport,
     Thresholds,
 )
@@ -25,8 +26,8 @@ def _report(
     """Constrói um `StructureReport` com as contagens desejadas."""
     return StructureReport(
         workbook_id="wb-1",
-        worksheets=[f"ws{i}" for i in range(worksheets)],
-        dashboards=[f"db{i}" for i in range(dashboards)],
+        worksheets=[SheetRef(name=f"ws{i}") for i in range(worksheets)],
+        dashboards=[SheetRef(name=f"db{i}") for i in range(dashboards)],
         connections=[
             ConnectionInfo(name=f"c{i}", type="postgres", server="srv", is_valid=True)
             for i in range(data_sources)
@@ -130,3 +131,35 @@ def test_audit_complexity_valores_no_limite_exato_nao_geram_finding(
 
     assert result.findings == []
     assert result.compliant is True
+
+
+# -- Contagem sobre list[SheetRef] (não-regressão do novo tipo) ----------------
+
+
+def test_measure_conta_worksheets_sobre_sheetref() -> None:
+    report = _report(worksheets=7)
+
+    result = audit_complexity(report, _DEFAULT_THRESHOLDS)
+
+    assert all(isinstance(w, SheetRef) for w in report.worksheets)
+    assert result.metrics.worksheets == 7
+
+
+def test_measure_conta_dashboards_sobre_sheetref() -> None:
+    report = _report(dashboards=4)
+
+    result = audit_complexity(report, _DEFAULT_THRESHOLDS)
+
+    assert all(isinstance(d, SheetRef) for d in report.dashboards)
+    assert result.metrics.dashboards == 4
+
+
+def test_complexity_excede_worksheets_com_sheetref() -> None:
+    report = _report(worksheets=21)
+
+    result = audit_complexity(report, _DEFAULT_THRESHOLDS)
+
+    worksheets_findings = [f for f in result.findings if f.metric == "worksheets"]
+    assert len(worksheets_findings) == 1
+    assert worksheets_findings[0].value == 21
+    assert result.compliant is False

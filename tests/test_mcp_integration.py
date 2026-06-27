@@ -25,7 +25,16 @@ from mcp.types import ImageContent
 from PIL import Image as PILImage
 
 import mcp_tableau.server as server
-from mcp_tableau.tableau.client import PublishedRef
+from mcp_tableau.models import (
+    ContentRef,
+    ErrorCode,
+    FilterInfo,
+    LineageNode,
+    SheetRef,
+    SimilarityMatch,
+    StructureReport,
+)
+from mcp_tableau.tableau.client import PublishedRef, TableauClientError
 from mcp_tableau.tools import deploy, metadata, qa, visual
 
 # Conjunto completo de ferramentas que devem estar registradas (RF22): as quatro
@@ -195,6 +204,149 @@ def test_mcp_ferramenta_em_erro_retorna_toolerror_serializado(
     assert envelope["status"] == "error"
     assert envelope["error"]["code"] == "INVALID_FILE"
     assert envelope["error"]["message"]
+
+
+# -- Contrato SheetRef / worksheet_id serializado (Tarefa 5.0) -----------------
+
+
+def _structure_report_fixture() -> StructureReport:
+    """Relatório com uma worksheet renderizável, uma oculta e um dashboard."""
+    return StructureReport(
+        workbook_id="wb-it",
+        worksheets=[SheetRef(name="Vendas por Região"), SheetRef(name="Oculta")],
+        dashboards=[SheetRef(name="Painel Executivo")],
+        filters=[
+            FilterInfo(
+                worksheet="Vendas por Região",
+                field="Região",
+                kind="categorical",
+                has_logic=True,
+            )
+        ],
+    )
+
+
+def test_inspect_workbook_structure_contrato_serializa_sheetref(
+    mcp_server: server.FastMCP,
+    fake_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client.download_workbook.return_value = "/tmp/ignored.twbx"
+    fake_client.list_workbook_view_luids.return_value = {
+        "Vendas por Região": "luid-vendas",
+        "Painel Executivo": "luid-painel",
+    }
+    monkeypatch.setattr(
+        qa, "inspect_structure", lambda *a, **k: _structure_report_fixture()
+    )
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool(
+                "inspect_workbook_structure", {"workbook_id": "wb-it"}
+            )
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    assert payload["status"] == "success"
+    # worksheets[].id / worksheets[].name presentes e tipados.
+    ws = {w["name"]: w["id"] for w in payload["worksheets"]}
+    assert ws["Vendas por Região"] == "luid-vendas"
+    assert ws["Oculta"] is None
+    assert payload["dashboards"][0]["id"] == "luid-painel"
+    # filters[].worksheet_id presente e casado por nome.
+    assert payload["filters"][0]["worksheet_id"] == "luid-vendas"
+
+
+def test_inspect_workbook_structure_degradado_serializa_id_null(
+    mcp_server: server.FastMCP,
+    fake_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client.download_workbook.return_value = "/tmp/ignored.twbx"
+    fake_client.list_workbook_view_luids.side_effect = TableauClientError(
+        ErrorCode.UPSTREAM_ERROR, "Falha ao comunicar com o Tableau."
+    )
+    monkeypatch.setattr(
+        qa, "inspect_structure", lambda *a, **k: _structure_report_fixture()
+    )
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool(
+                "inspect_workbook_structure", {"workbook_id": "wb-it"}
+            )
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    # Degradação: status success, campo id presente e null (não omitido).
+    assert payload["status"] == "success"
+    for ws in payload["worksheets"]:
+        assert "id" in ws
+        assert ws["id"] is None
+    assert payload["dashboards"][0]["id"] is None
+    assert "worksheet_id" in payload["filters"][0]
+    assert payload["filters"][0]["worksheet_id"] is None
+
+
+def test_render_aceita_id_do_structure_report(
+    mcp_server: server.FastMCP,
+    fake_client: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1) Inspeção produz um SheetRef.id (LUID) por correspondência de nome.
+    fake_client.download_workbook.return_value = "/tmp/ignored.twbx"
+    fake_client.list_workbook_view_luids.return_value = {
+        "Vendas por Região": "luid-vendas",
+        "Painel Executivo": "luid-painel",
+    }
+    monkeypatch.setattr(
+        qa, "inspect_structure", lambda *a, **k: _structure_report_fixture()
+    )
+    fake_client.render_view_image.return_value = _png_bytes("white")
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            inspected = await client.call_tool(
+                "inspect_workbook_structure", {"workbook_id": "wb-it"}
+            )
+            view_id = inspected.structured_content["result"]["worksheets"][0]["id"]
+            # 2) O id é aceito sem transformação pela ferramenta de render.
+            rendered = await client.call_tool("render_view_image", {"view_id": view_id})
+            return view_id, rendered
+
+    view_id, rendered = _await(scenario())
+
+    assert view_id == "luid-vendas"
+    assert rendered.is_error is False
+    # O mesmo id chegou ao cliente de render, sem transformação.
+    assert fake_client.render_view_image.call_args.args[0] == "luid-vendas"
+
+
+# -- RF11: consistência do formato de `id` em similaridade/linhagem ------------
+
+
+def test_rf11_id_consistente_em_similaridade_e_linhagem() -> None:
+    """`SimilarityMatch`/`LineageNode`/`ContentRef` expõem `id: str` obrigatório.
+
+    Garante que o `id` retornado por busca de similaridade e linhagem tem o mesmo
+    formato (string LUID) consumido por inspeção/render — não há divergência.
+    """
+    for model in (SimilarityMatch, LineageNode, ContentRef):
+        field = model.model_fields.get("id")
+        assert field is not None, f"{model.__name__} deve expor 'id'"
+        assert field.annotation is str, f"{model.__name__}.id deve ser str"
+
+    match = SimilarityMatch(id="luid-x", name="X", type="workbook", score=0.9)
+    node = LineageNode(id="luid-y", name="Y", type="datasource")
+    ref = ContentRef(id="luid-z", name="Z", type="workbook")
+    assert match.model_dump()["id"] == "luid-x"
+    assert node.model_dump()["id"] == "luid-y"
+    assert ref.model_dump()["id"] == "luid-z"
 
 
 def test_run_registra_ferramentas_e_inicia_stdio(

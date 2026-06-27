@@ -535,3 +535,103 @@ def test_client_search_content_filtra_por_termo(
     results = client.search_content("vendas")
 
     assert [r.id for r in results] == ["wb-1"]
+
+
+# -- Views: list_workbook_view_luids ------------------------------------------
+
+
+def _view(name: str, luid: str | None) -> MagicMock:
+    """`ViewItem` mockado com `.id` (LUID) e `.name`."""
+    view = MagicMock()
+    view.id = luid
+    view.name = name
+    return view
+
+
+def _populate_views(*views: MagicMock):  # type: ignore[no-untyped-def]
+    """Configura `get_by_id`/`populate_views` para expor `views` no item."""
+    workbook_item = MagicMock()
+    workbook_item.views = list(views)
+    return workbook_item
+
+
+def test_list_workbook_view_luids_retorna_mapa_nome_luid(
+    client: TableauClient, server: MagicMock
+) -> None:
+    workbook_item = _populate_views(
+        _view("Vendas por Região", "luid-1"),
+        _view("Painel Executivo", "luid-2"),
+    )
+    server.workbooks.get_by_id.return_value = workbook_item
+
+    result = client.list_workbook_view_luids("wb-1")
+
+    assert result == {"Vendas por Região": "luid-1", "Painel Executivo": "luid-2"}
+    server.workbooks.get_by_id.assert_called_once_with("wb-1")
+    server.workbooks.populate_views.assert_called_once_with(workbook_item, usage=False)
+
+
+def test_list_workbook_view_luids_omite_view_sem_luid(
+    client: TableauClient, server: MagicMock
+) -> None:
+    server.workbooks.get_by_id.return_value = _populate_views(
+        _view("Visível", "luid-1"),
+        _view("Oculta sem LUID", None),
+        _view("Oculta string vazia", ""),
+    )
+
+    result = client.list_workbook_view_luids("wb-1")
+
+    assert result == {"Visível": "luid-1"}
+
+
+def test_list_workbook_view_luids_nomes_duplicados_ultima_vence(
+    client: TableauClient, server: MagicMock
+) -> None:
+    server.workbooks.get_by_id.return_value = _populate_views(
+        _view("Mesmo Nome", "luid-antigo"),
+        _view("Mesmo Nome", "luid-novo"),
+    )
+
+    result = client.list_workbook_view_luids("wb-1")
+
+    assert result == {"Mesmo Nome": "luid-novo"}
+
+
+def test_list_workbook_view_luids_reautentica_em_401(
+    client: TableauClient, server: MagicMock
+) -> None:
+    workbook_item = _populate_views(_view("Vendas", "luid-1"))
+    server.workbooks.get_by_id.side_effect = [_server_error(401), workbook_item]
+
+    result = client.list_workbook_view_luids("wb-1")
+
+    assert result == {"Vendas": "luid-1"}
+    server.auth.sign_in.assert_called_once()
+    assert server.workbooks.get_by_id.call_count == 2
+
+
+def test_list_workbook_view_luids_traduz_404_not_found(
+    client: TableauClient, server: MagicMock
+) -> None:
+    server.workbooks.get_by_id.side_effect = _server_error(404)
+
+    with pytest.raises(TableauClientError) as exc_info:
+        client.list_workbook_view_luids("missing")
+
+    assert exc_info.value.code is ErrorCode.NOT_FOUND
+
+
+def test_list_workbook_view_luids_nao_vaza_credenciais(
+    client: TableauClient, server: MagicMock, settings: Settings
+) -> None:
+    secret = settings.pat_secret.get_secret_value()
+    pat_name = settings.pat_name
+    server.workbooks.get_by_id.side_effect = _server_error(404)
+
+    with pytest.raises(TableauClientError) as exc_info:
+        client.list_workbook_view_luids("wb-1")
+
+    message = exc_info.value.message
+    assert secret not in message
+    assert pat_name not in message
