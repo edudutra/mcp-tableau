@@ -395,6 +395,30 @@ class TableauClient:
 
         return self._with_reauth(op)
 
+    # -- Views ------------------------------------------------------------------
+
+    def list_workbook_view_luids(self, workbook_id: str) -> dict[str, str]:
+        """Mapa nome_da_view -> LUID das views publicadas do workbook.
+
+        Executa uma única chamada ``workbooks.populate_views`` (``usage=False``,
+        sem estatísticas de uso) e monta o dicionário ``{view.name: view.id}``.
+        Views sem LUID (ex.: sheets ocultas/não publicadas) são **omitidas** do
+        mapa. Em caso de nomes duplicados, a última ocorrência prevalece (ordem
+        natural de iteração de ``workbook_item.views``).
+
+        A operação é envolvida em :meth:`_with_reauth`: 401/sessão expirada
+        dispara re-autenticação e repete exatamente uma vez; demais erros do TSC
+        são traduzidos para `TableauClientError` com o `ErrorCode` adequado, sem
+        vazar credenciais.
+        """
+
+        def op() -> dict[str, str]:
+            workbook_item = self._server.workbooks.get_by_id(workbook_id)
+            self._server.workbooks.populate_views(workbook_item, usage=False)
+            return {view.name: view.id for view in workbook_item.views if view.id}
+
+        return self._with_reauth(op)
+
     def search_content(self, term: str) -> list[ContentRef]:
         """Lista workbooks e datasources cujo nome contém ``term`` (case-insensitive).
 

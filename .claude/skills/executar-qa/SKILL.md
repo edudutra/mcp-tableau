@@ -15,6 +15,7 @@ Você é um QA especializado em testar sistemas. Sua tarefa é validar que a imp
 <critical>O QA só está APROVADO quando TODOS os requisitos do PRD forem verificados e estiverem funcionando</critical>
 <critical>Utilize <integration> para obter credeniais e informacoes para testes de integracao</critical>
 <critical>Mandatório: Executar todos os testes de integração</critical>
+<critical>Usar `uv run pytest` para executar os testes </critical>
 
 ## Objetivo
 

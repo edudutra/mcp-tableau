@@ -18,6 +18,7 @@ servidor FastMCP é feito por `register(mcp)`, chamado por `server.py`.
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -33,6 +34,8 @@ from mcp_tableau.tableau.client import (
 from mcp_tableau.validation.complexity import audit_complexity
 from mcp_tableau.validation.structure import StructureParseError, inspect_structure
 
+logger = logging.getLogger(__name__)
+
 
 def inspect_workbook_structure(workbook_id: str) -> StructureReport | ToolError:
     """Inspeciona a estrutura interna de um workbook publicado no Tableau.
@@ -43,18 +46,29 @@ def inspect_workbook_structure(workbook_id: str) -> StructureReport | ToolError:
     presença de `issues` é diagnóstica e **não** faz a ferramenta falhar: o
     relatório é retornado com `issues` populado.
 
+    Worksheets e dashboards são retornados como objetos `{id, name}`: o `id` é o
+    LUID renderizável da view (aceito diretamente por `render_view_image`/
+    `render_view_pdf`), obtido por correspondência de nome com as views
+    publicadas do workbook. Os filtros expõem `worksheet_id` com o LUID da
+    worksheet onde estão declarados. Quando uma sheet não é uma view publicada
+    (ex.: oculta) ou quando a consulta de views falha, o `id`/`worksheet_id`
+    correspondente vem `null` (campo presente, não omitido) — o enriquecimento é
+    **best-effort** e nunca transforma a inspeção em erro.
+
     Args:
         workbook_id: LUID do workbook publicado no Tableau.
 
     Returns:
-        `StructureReport` em caso de sucesso, ou `ToolError` com código acionável
+        `StructureReport` em caso de sucesso (inclusive no caminho degradado, com
+        ids `null` e `status="success"`), ou `ToolError` com código acionável
         (`NOT_FOUND` se o workbook não existir, `UPSTREAM_ERROR` se o artefato
         baixado for inválido/corrompido, ou demais códigos da camada de
         integração: `AUTH_FAILED`, `PERMISSION_DENIED`, ...).
     """
     try:
         with tableau_session(load_settings()) as client:
-            return _load_structure(client, workbook_id)
+            report = _load_structure(client, workbook_id)
+            return _enrich_with_view_luids(client, report, workbook_id)
     except TableauClientError as exc:
         return ToolError.of(exc.code, exc.message)
     except StructureParseError as exc:
@@ -100,6 +114,46 @@ def _load_structure(client: TableauClient, workbook_id: str) -> StructureReport:
     with tempfile.TemporaryDirectory() as tmpdir:
         path = client.download_workbook(workbook_id, Path(tmpdir))
         return inspect_structure(path, workbook_id=workbook_id)
+
+
+def _enrich_with_view_luids(
+    client: TableauClient, report: StructureReport, workbook_id: str
+) -> StructureReport:
+    """Preenche `SheetRef.id` e `FilterInfo.worksheet_id` por nome (best-effort).
+
+    Consulta as views publicadas do workbook (`list_workbook_view_luids`) e casa
+    cada worksheet/dashboard e filtro com o LUID da view de mesmo nome. Sheets sem
+    view publicada (ex.: ocultas) permanecem com `id=None`.
+
+    O enriquecimento é **best-effort** (RF10): qualquer `TableauClientError` ao
+    obter as views degrada o relatório para ids nulos e o retorna com
+    `status="success"`, sem propagar erro. Nenhuma credencial é registrada em log.
+    """
+    try:
+        luid_by_name = client.list_workbook_view_luids(workbook_id)
+    except TableauClientError as exc:
+        logger.warning(
+            "Enriquecimento de LUIDs indisponível para o workbook %s (%s); "
+            "worksheets/dashboards/filtros retornarão com id nulo.",
+            workbook_id,
+            exc.code.value,
+        )
+        return report
+
+    sheets = [*report.worksheets, *report.dashboards]
+    for sheet in sheets:
+        sheet.id = luid_by_name.get(sheet.name)
+    for filtro in report.filters:
+        filtro.worksheet_id = luid_by_name.get(filtro.worksheet)
+
+    missing = sum(1 for sheet in sheets if sheet.id is None)
+    logger.debug(
+        "Workbook %s: %d de %d sheet(s) sem LUID de view correspondente.",
+        workbook_id,
+        missing,
+        len(sheets),
+    )
+    return report
 
 
 def register(mcp: FastMCP) -> None:

@@ -1,10 +1,17 @@
 """Testes unitários dos contratos Pydantic em `mcp_tableau.models`."""
 
+import pytest
+from pydantic import ValidationError
+
 from mcp_tableau.models import (
+    ConnectionInfo,
     DictionaryField,
     ErrorCode,
     FieldInfo,
+    FilterInfo,
     PublishResult,
+    SheetRef,
+    StructureReport,
     ToolError,
 )
 
@@ -64,3 +71,72 @@ def test_models_campos_opcionais_aceitam_null() -> None:
     assert field_dump["is_broken"] is False
     assert dict_dump["formula"] is None
     assert dict_dump["description"] is None
+
+
+def test_sheetref_aceita_id_none_preserva_name() -> None:
+    sheet = SheetRef(id=None, name="X")
+
+    dump = sheet.model_dump(mode="json")
+
+    # `id` ausente é representado como null (campo presente, não omitido).
+    assert dump["id"] is None
+    assert dump["name"] == "X"
+
+
+def test_sheetref_serializa_id_luid() -> None:
+    sheet = SheetRef(id="luid", name="X")
+
+    dump = sheet.model_dump(mode="json")
+
+    assert dump["id"] == "luid"
+    assert dump["name"] == "X"
+
+
+def test_structure_report_worksheets_aceita_list_sheetref() -> None:
+    report = StructureReport(
+        workbook_id="w",
+        worksheets=[SheetRef(id="luid-ws", name="Vendas")],
+        dashboards=[SheetRef(id=None, name="Painel")],
+    )
+
+    dump = report.model_dump(mode="json")
+
+    assert dump["worksheets"] == [{"id": "luid-ws", "name": "Vendas"}]
+    assert dump["dashboards"] == [{"id": None, "name": "Painel"}]
+
+
+def test_structure_report_rejeita_list_str_em_worksheets() -> None:
+    with pytest.raises(ValidationError):
+        StructureReport(workbook_id="w", worksheets=["A"])
+
+
+def test_filter_info_worksheet_id_default_none() -> None:
+    filtro = FilterInfo(
+        worksheet="Vendas por Região",
+        field="Região",
+        kind="categorical",
+        has_logic=True,
+    )
+
+    dump = filtro.model_dump(mode="json")
+
+    assert dump["worksheet_id"] is None
+
+
+def test_filter_info_aceita_worksheet_id() -> None:
+    filtro = FilterInfo(
+        worksheet="Vendas por Região",
+        worksheet_id="luid",
+        field="Região",
+        kind="categorical",
+        has_logic=True,
+    )
+
+    dump = filtro.model_dump(mode="json")
+
+    assert dump["worksheet_id"] == "luid"
+
+
+def test_connection_info_inalterada() -> None:
+    # `ConnectionInfo` não recebe `id` nesta feature (RF5 fora do ciclo).
+    assert "id" not in ConnectionInfo.model_fields

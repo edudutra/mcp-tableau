@@ -24,9 +24,14 @@ from pathlib import Path
 import pytest
 
 from mcp_tableau.config import load_settings
-from mcp_tableau.models import ErrorCode, PublishResult, RenderImageResult
+from mcp_tableau.models import (
+    ErrorCode,
+    PublishResult,
+    RenderImageResult,
+    StructureReport,
+)
 from mcp_tableau.tableau.client import tableau_session
-from mcp_tableau.tools import deploy, metadata, visual
+from mcp_tableau.tools import deploy, metadata, qa, visual
 
 pytestmark = [
     pytest.mark.integration,
@@ -101,3 +106,26 @@ def test_integration_metadata_lineage_responde() -> None:
     assert status == "success"
     assert result.direction == "downstream"
     assert result.root.id, "root da linhagem não foi resolvido"
+
+
+def test_real_inspect_structure_retorna_luids_validos() -> None:
+    """Inspeciona um workbook real: views publicadas têm `id` renderizável.
+
+    Worksheets visíveis (views publicadas) devem vir com `id` não nulo e aceito
+    por `render_view_image`; sheets ocultas/não publicadas vêm com `id=None`
+    (degradação esperada por design, não erro).
+    """
+    workbook_id = _required_env("TABLEAU_IT_WORKBOOK_ID")
+
+    result = qa.inspect_workbook_structure(workbook_id)
+    assert isinstance(result, StructureReport), getattr(result, "error", result)
+    assert result.status == "success"
+
+    renderizaveis = [w for w in result.worksheets if w.id is not None]
+    assert renderizaveis, "esperava ao menos uma worksheet com LUID renderizável"
+
+    # O LUID de uma worksheet visível é aceito pela ferramenta de render real.
+    rendered = visual.render_view_image(renderizaveis[0].id)
+    assert isinstance(rendered, tuple)
+    _payload, image = rendered
+    assert bytes(image.data).startswith(b"\x89PNG\r\n\x1a\n")

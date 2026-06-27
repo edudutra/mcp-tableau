@@ -82,6 +82,7 @@ from mcp_tableau.models import (  # noqa: E402
     ConnectionInfo,
     FieldInfo,
     FilterInfo,
+    SheetRef,
     StructureIssue,
     StructureReport,
 )
@@ -141,8 +142,11 @@ def inspect_structure(
             f"Detalhe: {exc}"
         ) from exc
 
-    worksheets = list(workbook.worksheets)
-    dashboards = list(workbook.dashboards)
+    # LUIDs nascem nulos: o parsing é puro (só o arquivo local, sem servidor).
+    # A ferramenta (Tarefa 4.0) preenche `SheetRef.id`/`FilterInfo.worksheet_id`
+    # por correspondência de nome com as views publicadas.
+    worksheets = [SheetRef(name=name) for name in workbook.worksheets]
+    dashboards = [SheetRef(name=name) for name in workbook.dashboards]
 
     connections, fields, defined_fields = _collect_datasources(workbook)
     filters = _collect_filters(path, worksheets)
@@ -226,7 +230,7 @@ def _is_connection_valid(conn_type: str, server: str | None) -> bool:
     return bool(server)
 
 
-def _collect_filters(path: Path, worksheets: list[str]) -> list[FilterInfo]:
+def _collect_filters(path: Path, worksheets: list[SheetRef]) -> list[FilterInfo]:
     """Extrai filtros por worksheet diretamente do XML do workbook.
 
     `tableaudocumentapi` não expõe filtros, então lemos o XML cru. Um filtro
