@@ -7,12 +7,19 @@ from mcp_tableau.models import (
     ConnectionInfo,
     DictionaryField,
     ErrorCode,
+    ExceededDimension,
     FieldInfo,
     FilterInfo,
+    HyperColumn,
+    HyperCreateResult,
+    HyperQueryResult,
+    HyperTableInfo,
+    InlineColumn,
     PublishResult,
     SheetRef,
     StructureReport,
     ToolError,
+    VolumeAlert,
 )
 
 
@@ -140,3 +147,101 @@ def test_filter_info_aceita_worksheet_id() -> None:
 def test_connection_info_inalterada() -> None:
     # `ConnectionInfo` não recebe `id` nesta feature (RF5 fora do ciclo).
     assert "id" not in ConnectionInfo.model_fields
+
+
+# Capacidade 5 — Hyper Datasources ----------------------------------------------
+
+
+def test_hyper_create_result_serializa_status_success() -> None:
+    resultado = HyperCreateResult(
+        hyper_path="/data/extratos/vendas_2026.hyper",
+        table_name="Extract",
+        columns=[HyperColumn(name="valor", type="double", nullable=True)],
+        row_count=184230,
+        source="csv",
+    )
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["source"] == "csv"
+    assert dump["row_count"] == 184230
+    # Warnings default para lista vazia (campo presente, não omitido).
+    assert dump["warnings"] == []
+
+
+def test_volume_alert_serializa_status_volume_alert_e_dimensoes() -> None:
+    alerta = VolumeAlert(
+        exceeded=[
+            ExceededDimension(
+                dimension="source_file_mb",
+                limit=500,
+                actual=2048.7,
+                risk="Arquivo grande pode esgotar disco.",
+            )
+        ],
+        message="O arquivo tem 2048.7 MB, acima do limiar de 500 MB.",
+        how_to_proceed="Repita com confirm_large_operation=true.",
+    )
+
+    dump = alerta.model_dump(mode="json")
+
+    assert dump["status"] == "volume_alert"
+    assert dump["exceeded"][0]["dimension"] == "source_file_mb"
+    assert dump["exceeded"][0]["actual"] == 2048.7
+    assert dump["exceeded"][0]["limit"] == 500.0
+
+
+def test_hyper_query_result_row_count_e_truncated_consistentes() -> None:
+    resultado = HyperQueryResult(
+        columns=[HyperColumn(name="total", type="double", nullable=True)],
+        rows=[[1250341.55], [987222.10]],
+        row_count=2,
+        truncated=False,
+        max_rows=200,
+    )
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["row_count"] == 2
+    assert dump["truncated"] is False
+    assert dump["max_rows"] == 200
+
+
+def test_inline_column_tipo_desconhecido_rejeitado_na_validacao() -> None:
+    # Tipo fora do contrato é rejeitado na validação.
+    with pytest.raises(ValidationError):
+        InlineColumn(name="x", type="varchar")
+
+    # Tipos do contrato (incluindo numeric(p,s)) são aceitos.
+    assert InlineColumn(name="a", type="numeric(18,2)").type == "numeric(18,2)"
+    assert InlineColumn(name="b", type="big_int").nullable is True
+
+
+def test_error_code_contem_novos_codigos_hyper_e_db() -> None:
+    esperados = (
+        "HYPER_INVALID_FILE",
+        "HYPER_SCHEMA_MISMATCH",
+        "HYPER_SQL_ERROR",
+        "DB_CONNECTION_NOT_CONFIGURED",
+        "DB_CONNECTION_FAILED",
+        "DB_AUTH_FAILED",
+        "DB_QUERY_ERROR",
+    )
+    for codigo in esperados:
+        assert codigo in ErrorCode.__members__
+        assert ErrorCode[codigo].value == codigo
+
+
+def test_hyper_table_info_row_count_nulo_permitido() -> None:
+    info = HyperTableInfo(
+        schema_name="Extract",
+        table_name="Extract",
+        columns=[HyperColumn(name="v", type="date", nullable=True)],
+        row_count=None,
+    )
+
+    dump = info.model_dump(mode="json")
+
+    # Contagem não determinável é normalizada para null (campo presente).
+    assert dump["row_count"] is None

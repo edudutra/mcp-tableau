@@ -8,10 +8,11 @@ O objetivo é permitir que um agente de IA autônomo complete o fluxo
 **descobrir → construir → validar → publicar** sem intervenção humana, com retornos
 estruturados e auditáveis. As capacidades cobrem:
 
-- **Deploy** — publicar/sobrescrever workbooks (`.twb`/`.twbx`) e datasources (`.tds`/`.tdsx`).
+- **Deploy** — publicar/sobrescrever workbooks (`.twb`/`.twbx`) e datasources (`.tds`/`.tdsx`/`.hyper`).
 - **Inspeção visual** — renderizar PNG/PDF de views e sinalizar telas em branco.
 - **QA estrutural** — ler campos, filtros e conexões; auditar complexidade contra boas práticas.
 - **Metadados** — linhagem ascendente/descendente, dicionário de dados e busca de similaridade.
+- **Hyper Datasources** — criar, consultar, inspecionar e transformar extratos `.hyper` locais (de CSV/Parquet, dados inline ou bancos externos) antes de publicar.
 
 
 
@@ -23,8 +24,12 @@ estruturados e auditáveis. As capacidades cobrem:
 - **Linguagem**: Python `>= 3.13`
 - **Framework MCP**: FastMCP (`>= 3.4.2`), transporte **stdio**
 - **Integração Tableau**: `tableauserverclient` (REST API) + Metadata API (GraphQL)
+- **Extratos Hyper**: `tableauhyperapi` (runtime local `.hyper`) + `sqlalchemy` (extração de bancos externos)
 - **Parsing/validação**: `tableaudocumentapi`, `Pillow`, `rapidfuzz`, `pydantic`
 - **Gerenciador de pacotes**: [uv](https://docs.astral.sh/uv/)
+
+> ⚠️ O `tableauhyperapi` embarca um runtime binário (~150 MB) e só roda em
+> plataformas x64/arm64 de Linux, macOS e Windows. Ver [QUICKSTART](QUICKSTART.md).
 
 ## Instalação
 
@@ -53,8 +58,17 @@ cp .env.example .env
 | `MAX_FILTERS` | não | `15` | Limiar de filtros para auditoria de complexidade. |
 | `MAX_WORKSHEETS` | não | `20` | Limiar de worksheets. |
 | `MAX_DATA_SOURCES` | não | `5` | Limiar de fontes de dados. |
+| `HYPER_MAX_SOURCE_FILE_MB` | não | `500` | Limiar de tamanho (MB) do arquivo de origem em `create_hyper_from_file`. |
+| `HYPER_MAX_INLINE_ROWS` | não | `1000` | Limiar de linhas inline em `create_hyper_from_inline`. |
+| `HYPER_MAX_RESULT_ROWS` | não | `200` | Default de linhas retornadas por `query_hyper` (teto rígido 10.000). |
+| `HYPER_MAX_EXTRACT_ROWS` | não | `5000000` | Limiar de linhas extraídas em `extract_database_to_hyper`. |
+| `HYPER_DB_CONN_<NOME>` | não | — | Connection string SQLAlchemy de uma conexão nomeada (ver Capacidade 5). |
 
 > O arquivo `.env` é ignorado pelo Git. **Nunca** commite credenciais.
+>
+> Os limiares `HYPER_*` geram **alertas não bloqueantes** (nunca bloqueio): ao
+> exceder um limiar, a tool retorna um `VolumeAlert` e a operação só prossegue com
+> `confirm_large_operation=true`.
 
 ## Execução
 
@@ -63,6 +77,62 @@ Inicia o servidor MCP em transporte stdio:
 ```bash
 uv run python main.py
 ```
+
+## Capacidade 5 — Hyper Datasources
+
+Ferramentas para o ciclo de vida **local** de extratos `.hyper` antes da
+publicação. Todas operam sobre caminhos locais informados pelo agente e delegam ao
+runtime `tableauhyperapi` (iniciado sob demanda, sem processo residente).
+
+| Ferramenta | O que faz |
+| --- | --- |
+| `create_hyper_from_file` | Cria um `.hyper` a partir de CSV/Parquet. Parquet infere o schema automaticamente; para **CSV informe `schema` explícito** (o runtime não infere schema de CSV). |
+| `create_hyper_from_inline` | Cria um `.hyper` a partir de colunas + linhas enviadas na chamada (de-paras e tabelas de referência pequenas). |
+| `extract_database_to_hyper` | Extrai o resultado de uma query de um banco externo (via conexão nomeada) para um `.hyper`. |
+| `inspect_hyper_schema` | Lista schemas, tabelas, colunas e contagem de linhas de um `.hyper`. |
+| `query_hyper` | Executa uma consulta **de leitura** (`SELECT`/`WITH`) com truncamento configurável. |
+| `append_to_hyper` | Acrescenta dados (de arquivo ou inline) a uma tabela existente, validando o schema antes de gravar. |
+| `execute_hyper_sql` | Executa um comando de **modificação** (`INSERT`/`UPDATE`/`DELETE`/`CREATE TABLE AS`). |
+
+O `.hyper` gerado é publicado como datasource com `publish_datasource` (aceita
+`.tds`/`.tdsx`/`.hyper`), fechando o fluxo **CSV/banco → `.hyper` → datasource**.
+
+### Conexões de banco externo (nomeadas)
+
+`extract_database_to_hyper` recebe **apenas o nome lógico** da conexão — a
+connection string vem da variável de ambiente `HYPER_DB_CONN_<NOME>` (com `<NOME>`
+em maiúsculas) no host do servidor MCP. Credenciais **nunca** são parâmetro das
+tools, nem aparecem em logs, erros ou retornos.
+
+```bash
+# A tool chamada com connection_name="VENDAS" lê esta variável:
+HYPER_DB_CONN_VENDAS=postgresql+psycopg://usuario:senha@host:5432/base
+```
+
+**Drivers de banco não são dependência do projeto** — apenas o SQLAlchemy Core é
+instalado. O administrador instala no host o driver correspondente a cada fonte,
+conforme a connection string usada:
+
+| Fonte | Driver (exemplo) | Connection string |
+| --- | --- | --- |
+| PostgreSQL | `psycopg` | `postgresql+psycopg://…` |
+| SQL Server | `pymssql` | `mssql+pymssql://…` |
+| Oracle | `oracledb` | `oracle+oracledb://…` |
+| MySQL | `pymysql` | `mysql+pymysql://…` |
+| SQLite | (embutido) | `sqlite:///caminho/arquivo.db` |
+
+### Ciclo de vida e limpeza dos `.hyper`
+
+O agente informa caminhos absolutos de leitura e escrita — **não há workspace
+sandbox**. A localização e a limpeza dos `.hyper` intermediários são
+responsabilidade do operador. Recomendações:
+
+- Use um **diretório dedicado** para os extratos (ex.: `/data/extratos/`), fora de
+  áreas versionadas ou sincronizadas.
+- **Remova os `.hyper` intermediários após a publicação** — são reprodutíveis a
+  partir da origem e podem ocupar bastante espaço.
+- Trate o conteúdo dos extratos como dado sensível: aplique as mesmas políticas de
+  acesso/retenção da fonte original.
 
 ## Estrutura do projeto
 
@@ -97,6 +167,11 @@ linhagem) é marcada com `@pytest.mark.integration`, fica fora da suite rápida 
 com `TABLEAU_INTEGRATION=1` e as variáveis de sandbox definidas
 (`TABLEAU_IT_WORKBOOK_PATH`, `TABLEAU_IT_PROJECT`, `TABLEAU_IT_VIEW_ID`,
 `TABLEAU_IT_DATASOURCE_ID`); caso contrário, esses testes são pulados.
+
+Os testes de integração do Hyper (`tests/integration/test_hyper_real.py`) usam o
+runtime real do `tableauhyperapi` e **rodam offline** (sem Tableau): pulam apenas
+se o runtime não estiver instalado. A exceção é a publicação do `.hyper` no
+Tableau real, que exige `TABLEAU_INTEGRATION=1` + `TABLEAU_IT_PROJECT`.
 
 Lint e formatação com Ruff:
 

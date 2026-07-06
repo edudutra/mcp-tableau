@@ -10,6 +10,10 @@ manualmente.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) instalado (fornece o `uvx`).
 - Um **Personal Access Token (PAT)** do Tableau Server/Cloud.
 - Python `>= 3.13` (o `uvx` baixa automaticamente se necessário).
+- **Runtime Hyper**: o servidor depende do `tableauhyperapi`, que embarca um
+  runtime binário (~150 MB) resolvido automaticamente pelo `uvx`. Só há suporte
+  para **x64/arm64** de **Linux, macOS e Windows** — em outras plataformas a
+  instalação falha com erro claro na inicialização.
 
 Verifique o `uv`:
 
@@ -43,8 +47,18 @@ As credenciais são lidas do ambiente (nunca são logadas nem retornadas):
 | `MAX_FILTERS` | não | `15` | Limiar de filtros para auditoria de complexidade. |
 | `MAX_WORKSHEETS` | não | `20` | Limiar de worksheets. |
 | `MAX_DATA_SOURCES` | não | `5` | Limiar de fontes de dados. |
+| `HYPER_MAX_SOURCE_FILE_MB` | não | `500` | Limiar de tamanho (MB) do arquivo de origem (Hyper). |
+| `HYPER_MAX_INLINE_ROWS` | não | `1000` | Limiar de linhas inline (Hyper). |
+| `HYPER_MAX_RESULT_ROWS` | não | `200` | Default de linhas por consulta `query_hyper` (teto 10.000). |
+| `HYPER_MAX_EXTRACT_ROWS` | não | `5000000` | Limiar de linhas extraídas de banco externo. |
+| `HYPER_DB_CONN_<NOME>` | não | — | Connection string SQLAlchemy de uma conexão nomeada para `extract_database_to_hyper`. |
 
 > **Nunca** commite o segredo do PAT. Configure-o sempre via ambiente do agente.
+>
+> Os limiares `HYPER_*` e as conexões `HYPER_DB_CONN_<NOME>` são detalhados na
+> [Capacidade 5 do README](README.md#capacidade-5--hyper-datasources). Os drivers
+> de banco (`psycopg`, `pymssql`, `oracledb`, …) são instalados **pelo
+> administrador** no host, conforme cada fonte.
 
 ## Configuração por agente
 

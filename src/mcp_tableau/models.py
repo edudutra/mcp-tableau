@@ -5,10 +5,11 @@ o envelope `ToolError` (`status="error"`). Campos ausentes no upstream (Tableau)
 são normalizados para `None` (serializados como `null`).
 """
 
+import re
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Tipos compartilhados ----------------------------------------------------------
 
@@ -32,6 +33,14 @@ class ErrorCode(StrEnum):
     RENDER_FAILED = "RENDER_FAILED"
     UPSTREAM_ERROR = "UPSTREAM_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    # Capacidade 5 — Hyper Datasources
+    HYPER_INVALID_FILE = "HYPER_INVALID_FILE"
+    HYPER_SCHEMA_MISMATCH = "HYPER_SCHEMA_MISMATCH"
+    HYPER_SQL_ERROR = "HYPER_SQL_ERROR"
+    DB_CONNECTION_NOT_CONFIGURED = "DB_CONNECTION_NOT_CONFIGURED"
+    DB_CONNECTION_FAILED = "DB_CONNECTION_FAILED"
+    DB_AUTH_FAILED = "DB_AUTH_FAILED"
+    DB_QUERY_ERROR = "DB_QUERY_ERROR"
 
 
 class ErrorDetail(BaseModel):
@@ -275,3 +284,132 @@ class SimilarityResult(BaseModel):
     status: Literal["success"] = "success"
     query: str
     matches: list[SimilarityMatch] = Field(default_factory=list)
+
+
+# Capacidade 5 — Hyper Datasources ----------------------------------------------
+
+# Tipos escalares aceitos na definição de colunas inline; `numeric(p,s)` é
+# validado à parte por regex (precisão/escala arbitrárias).
+_INLINE_SCALAR_TYPES = frozenset(
+    {"text", "big_int", "double", "bool", "date", "timestamp", "timestamp_tz"}
+)
+_NUMERIC_TYPE_RE = re.compile(r"^numeric\(\s*\d+\s*,\s*\d+\s*\)$")
+
+
+class HyperColumn(BaseModel):
+    """Coluna de uma tabela Hyper, com tipo lógico do contrato e nulabilidade."""
+
+    name: str
+    type: str
+    nullable: bool
+
+
+class InlineColumn(BaseModel):
+    """Definição de coluna para dados inline (entrada).
+
+    O `type` deve ser um dos tipos do contrato (`text`, `big_int`, `double`,
+    `bool`, `date`, `timestamp`, `timestamp_tz`) ou `numeric(p,s)`. Tipos fora
+    do contrato são rejeitados na validação.
+    """
+
+    name: str
+    type: str
+    nullable: bool = True
+
+    @field_validator("type")
+    @classmethod
+    def _tipo_no_contrato(cls, value: str) -> str:
+        if value in _INLINE_SCALAR_TYPES or _NUMERIC_TYPE_RE.match(value):
+            return value
+        aceitos = ", ".join(sorted(_INLINE_SCALAR_TYPES))
+        raise ValueError(
+            f"Tipo inline desconhecido: '{value}'. Use um de [{aceitos}] "
+            "ou numeric(p,s)."
+        )
+
+
+class HyperCreateResult(BaseModel):
+    """Relatório de criação/extração de um `.hyper` (RF4)."""
+
+    status: Literal["success"] = "success"
+    hyper_path: str
+    table_name: str
+    columns: list[HyperColumn] = Field(default_factory=list)
+    row_count: int
+    source: Literal["csv", "parquet", "inline", "database"]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class HyperQueryResult(BaseModel):
+    """Resultado de consulta SQL de leitura sobre um `.hyper` (RF13–RF14).
+
+    `truncated=True` indica que o resultado foi cortado em `max_rows`; datas e
+    timestamps chegam serializados como ISO-8601 e `numeric` como `str`.
+    """
+
+    status: Literal["success"] = "success"
+    columns: list[HyperColumn] = Field(default_factory=list)
+    rows: list[list[str | int | float | bool | None]] = Field(default_factory=list)
+    row_count: int
+    truncated: bool
+    max_rows: int
+
+
+class HyperTableInfo(BaseModel):
+    """Descrição estrutural de uma tabela dentro de um `.hyper` (RF16).
+
+    `row_count` é `None` quando a contagem não é determinável (ex.: falha ao
+    contar linhas de uma tabela específica, sem abortar o relatório).
+    """
+
+    schema_name: str
+    table_name: str
+    columns: list[HyperColumn] = Field(default_factory=list)
+    row_count: int | None
+
+
+class HyperSchemaReport(BaseModel):
+    """Relatório estrutural completo de um `.hyper` (RF16)."""
+
+    status: Literal["success"] = "success"
+    hyper_path: str
+    file_size_bytes: int
+    tables: list[HyperTableInfo] = Field(default_factory=list)
+
+
+class HyperMutationResult(BaseModel):
+    """Resultado de append/modificação sobre um `.hyper` (RF18–RF20).
+
+    `affected_rows` é `None` para DDL sem contagem disponível; `table_name` é
+    `None` quando a tabela alvo/criada não é identificável.
+    """
+
+    status: Literal["success"] = "success"
+    hyper_path: str
+    operation: Literal["append", "insert", "update", "delete", "create_table_as"]
+    affected_rows: int | None
+    table_name: str | None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ExceededDimension(BaseModel):
+    """Dimensão de volume que excedeu o limiar configurado (RF23)."""
+
+    dimension: Literal["source_file_mb", "inline_rows", "extracted_rows"]
+    limit: float
+    actual: float
+    risk: str
+
+
+class VolumeAlert(BaseModel):
+    """Alerta estruturado não bloqueante de volume (RF23–RF24).
+
+    Retornado no lugar do resultado quando uma dimensão pré-execução excede o
+    limiar e `confirm_large_operation=False`. Não é erro: instrui o agente a
+    repetir a chamada com confirmação explícita.
+    """
+
+    status: Literal["volume_alert"] = "volume_alert"
+    exceeded: list[ExceededDimension] = Field(default_factory=list)
+    message: str
+    how_to_proceed: str
