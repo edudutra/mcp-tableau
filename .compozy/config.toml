@@ -1,0 +1,4 @@
+[defaults]
+ide = 'claude'
+model = 'opus'
+reasoning_effort = 'medium'
