@@ -49,6 +49,21 @@ class Settings(BaseSettings):
     max_worksheets: int = Field(default=20, validation_alias="MAX_WORKSHEETS")
     max_data_sources: int = Field(default=5, validation_alias="MAX_DATA_SOURCES")
 
+    # Limiares de volume das operações Hyper (override por env; defaults
+    # conservadores). Exceder um limiar gera alerta não bloqueante, nunca bloqueio.
+    hyper_max_source_file_mb: int = Field(
+        default=500, validation_alias="HYPER_MAX_SOURCE_FILE_MB"
+    )
+    hyper_max_inline_rows: int = Field(
+        default=1_000, validation_alias="HYPER_MAX_INLINE_ROWS"
+    )
+    hyper_max_result_rows: int = Field(
+        default=200, validation_alias="HYPER_MAX_RESULT_ROWS"
+    )
+    hyper_max_extract_rows: int = Field(
+        default=5_000_000, validation_alias="HYPER_MAX_EXTRACT_ROWS"
+    )
+
     @property
     def thresholds(self) -> Thresholds:
         """Limiares efetivos de complexidade como contrato tipado."""

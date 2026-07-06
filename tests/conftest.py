@@ -1,6 +1,7 @@
 """Fixtures compartilhadas da suite de testes do MCP Tableau."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +41,55 @@ def _isolate_settings_env(
     for key in list(os.environ):
         if key.startswith("TABLEAU_") or key in _THRESHOLD_ENV:
             monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def hyper_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Ambiente Hyper com limiares de volume propositalmente baixos.
+
+    Permite exercitar `VolumeAlert`/`warnings` sem arquivos grandes ou milhões de
+    linhas: um arquivo minúsculo já excede `HYPER_MAX_SOURCE_FILE_MB=0` e poucas
+    linhas excedem os limiares inline/extração. Inclui as credenciais
+    obrigatórias para que `load_settings()` real construa o `Settings`.
+    """
+    env = {
+        **_REQUIRED_ENV,
+        "HYPER_MAX_SOURCE_FILE_MB": "0",
+        "HYPER_MAX_INLINE_ROWS": "2",
+        "HYPER_MAX_RESULT_ROWS": "100",
+        "HYPER_MAX_EXTRACT_ROWS": "5",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return dict(env)
+
+
+@pytest.fixture
+def sample_hyper(tmp_path: Path) -> Path:
+    """Constrói um `.hyper` mínimo (tabela única `Extract.Extract`) sob demanda.
+
+    Reuso **apenas** nos testes `integration`: exige o runtime real do
+    `tableauhyperapi` (ausente na suite rápida). Uma única tabela no schema/tabela
+    `Extract.Extract` mantém compatibilidade com Tableau Server antigos e basta
+    para publicar/inspecionar. O arquivo vive em `tmp_path` — nada versionado.
+    """
+    from mcp_tableau.hyper.engine import InlineIngestRequest, hyper_session
+    from mcp_tableau.models import InlineColumn
+
+    dest = tmp_path / "sample.hyper"
+    with hyper_session() as engine:
+        engine.create_table_from_rows(
+            InlineIngestRequest(
+                hyper_path=dest,
+                table_name="Extract",
+                columns=[
+                    InlineColumn(name="cidade", type="text"),
+                    InlineColumn(name="vendas", type="big_int"),
+                ],
+                rows=[["Santos", 100], ["Sao Paulo", 200]],
+            )
+        )
+    return dest
 
 
 @pytest.fixture

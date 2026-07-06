@@ -84,3 +84,55 @@ def test_settings_secret_nao_aparece_em_repr(tableau_env: dict[str, str]) -> Non
     # SecretStr garante que o valor não vaza em repr/str da configuração.
     assert tableau_env["TABLEAU_PAT_SECRET"] not in repr(settings)
     assert isinstance(settings, Settings)
+
+
+_HYPER_THRESHOLD_ENV = (
+    "HYPER_MAX_SOURCE_FILE_MB",
+    "HYPER_MAX_INLINE_ROWS",
+    "HYPER_MAX_RESULT_ROWS",
+    "HYPER_MAX_EXTRACT_ROWS",
+)
+
+
+def test_settings_hyper_defaults_conservadores(
+    tableau_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in _HYPER_THRESHOLD_ENV:
+        monkeypatch.delenv(key, raising=False)
+
+    settings = load_settings()
+
+    assert settings.hyper_max_source_file_mb == 500
+    assert settings.hyper_max_inline_rows == 1_000
+    assert settings.hyper_max_result_rows == 200
+    assert settings.hyper_max_extract_rows == 5_000_000
+
+
+def test_settings_hyper_limiares_lidos_do_ambiente(
+    tableau_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HYPER_MAX_SOURCE_FILE_MB", "10")
+    monkeypatch.setenv("HYPER_MAX_INLINE_ROWS", "50")
+    monkeypatch.setenv("HYPER_MAX_RESULT_ROWS", "20")
+    monkeypatch.setenv("HYPER_MAX_EXTRACT_ROWS", "100")
+
+    settings = load_settings()
+
+    assert settings.hyper_max_source_file_mb == 10
+    assert settings.hyper_max_inline_rows == 50
+    assert settings.hyper_max_result_rows == 20
+    assert settings.hyper_max_extract_rows == 100
+
+
+def test_settings_hyper_limiar_invalido_gera_config_error_sem_segredos(
+    tableau_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HYPER_MAX_INLINE_ROWS", "não-é-número")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_settings()
+
+    mensagem = str(exc_info.value)
+    # Erro acionável identifica a variável, sem vazar o valor sensível do PAT.
+    assert "HYPER_MAX_INLINE_ROWS" in mensagem
+    assert tableau_env["TABLEAU_PAT_SECRET"] not in mensagem

@@ -26,7 +26,7 @@ from mcp_tableau.tableau.client import (
 
 # Extensões aceitas por tipo de conteúdo publicável.
 _WORKBOOK_SUFFIXES = frozenset({".twb", ".twbx"})
-_DATASOURCE_SUFFIXES = frozenset({".tds", ".tdsx"})
+_DATASOURCE_SUFFIXES = frozenset({".tds", ".tdsx", ".hyper"})
 
 
 def publish_workbook(
@@ -58,11 +58,18 @@ def publish_datasource(
 ) -> PublishResult | ToolError:
     """Publica uma nova fonte de dados ou sobrescreve uma existente em um projeto.
 
-    Análoga a `publish_workbook` para `.tds`/`.tdsx`. Mesmas regras de resolução
-    de projeto, sobrescrita explícita (RF7) e chunking transparente.
+    Análoga a `publish_workbook` para `.tds`/`.tdsx`/`.hyper`. Mesmas regras de
+    resolução de projeto, sobrescrita explícita (RF7) e chunking transparente.
+    Um extrato `.hyper` gerado pelas tools de Hyper Datasources é publicado como
+    datasource sem embrulho `.tdsx` (RF21), e o retorno traz o `content_id` do
+    datasource criado/atualizado para encadeamento com metadados e QA (RF22).
+
+    Requisito de servidor para `.hyper`: extratos multi-tabela exigem Tableau
+    Server/Cloud ≥ 2021.4. Em versões 2021.3 ou anteriores, publique apenas
+    `.hyper` de tabela única no schema/tabela `Extract.Extract`.
 
     Args:
-        file_path: Caminho local do arquivo `.tds`/`.tdsx`.
+        file_path: Caminho local do arquivo `.tds`/`.tdsx`/`.hyper`.
         project_name: Nome do projeto de destino no Tableau.
         overwrite: Quando `true`, sobrescreve conteúdo existente (nova versão).
 

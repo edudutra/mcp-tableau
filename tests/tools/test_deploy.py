@@ -234,3 +234,52 @@ def test_publish_datasource_extensao_invalida_rejeitada(
     assert result.error.code is ErrorCode.INVALID_FILE
     session.assert_not_called()
     client.publish_datasource.assert_not_called()
+
+
+# -- Publicação de extrato .hyper (RF21–RF22) ----------------------------------
+
+
+def test_publish_datasource_aceita_extensao_hyper(
+    tmp_path: Path, client: MagicMock, session: MagicMock
+) -> None:
+    file_path = tmp_path / "Extrato.hyper"
+    file_path.write_bytes(b"\0" * 10)
+    client.publish_datasource.return_value = _published_ref(content_type="datasource")
+
+    result = deploy.publish_datasource(str(file_path), "Financeiro")
+
+    assert isinstance(result, PublishResult)
+    assert result.content_type == "datasource"
+    client.publish_datasource.assert_called_once_with(file_path, "p-1", overwrite=False)
+
+
+def test_publish_datasource_hyper_respeita_politica_de_sobrescrita(
+    tmp_path: Path, client: MagicMock, session: MagicMock
+) -> None:
+    file_path = tmp_path / "Vendas.hyper"
+    file_path.write_bytes(b"\0" * 10)
+    # Já existe um datasource de mesmo nome no projeto; overwrite=false recusa.
+    client.search_content.return_value = [
+        ContentRef(id="c-1", name="Vendas", type="datasource", project="Financeiro")
+    ]
+
+    result = deploy.publish_datasource(str(file_path), "Financeiro", overwrite=False)
+
+    assert isinstance(result, ToolError)
+    assert result.error.code is ErrorCode.OVERWRITE_NOT_ALLOWED
+    client.publish_datasource.assert_not_called()
+
+
+def test_publish_datasource_hyper_retorna_content_id_para_encadeamento(
+    tmp_path: Path, client: MagicMock, session: MagicMock
+) -> None:
+    file_path = tmp_path / "Vendas.hyper"
+    file_path.write_bytes(b"\0" * 10)
+    client.publish_datasource.return_value = _published_ref(content_type="datasource")
+
+    result = deploy.publish_datasource(str(file_path), "Financeiro")
+
+    assert isinstance(result, PublishResult)
+    # content_id permite encadear com metadados/QA (RF22).
+    assert result.content_id == "c-1"
+    assert result.content_type == "datasource"

@@ -25,21 +25,22 @@ from mcp.types import ImageContent
 from PIL import Image as PILImage
 
 import mcp_tableau.server as server
+from mcp_tableau.hyper.engine import TableReport
 from mcp_tableau.models import (
     ContentRef,
     ErrorCode,
     FilterInfo,
+    HyperColumn,
     LineageNode,
     SheetRef,
     SimilarityMatch,
     StructureReport,
 )
 from mcp_tableau.tableau.client import PublishedRef, TableauClientError
-from mcp_tableau.tools import deploy, metadata, qa, visual
+from mcp_tableau.tools import deploy, hyper, metadata, qa, visual
 
-# Conjunto completo de ferramentas que devem estar registradas (RF22): as quatro
-# capacidades do produto (deploy, visual, QA estrutural, metadados/linhagem).
-_EXPECTED_TOOLS = frozenset(
+# Ferramentas das quatro capacidades base (deploy, visual, QA, metadados/linhagem).
+_BASE_TOOLS = frozenset(
     {
         "publish_workbook",
         "publish_datasource",
@@ -53,6 +54,22 @@ _EXPECTED_TOOLS = frozenset(
         "search_similar_content",
     }
 )
+
+# Ferramentas da Capacidade 5 (Hyper Datasources).
+_HYPER_TOOLS = frozenset(
+    {
+        "inspect_hyper_schema",
+        "query_hyper",
+        "create_hyper_from_file",
+        "create_hyper_from_inline",
+        "extract_database_to_hyper",
+        "append_to_hyper",
+        "execute_hyper_sql",
+    }
+)
+
+# Conjunto completo esperado no servidor (RF22): 10 base + 7 Hyper = 17 tools.
+_EXPECTED_TOOLS = _BASE_TOOLS | _HYPER_TOOLS
 
 
 def _await[T](coro: Awaitable[T]) -> T:
@@ -347,6 +364,164 @@ def test_rf11_id_consistente_em_similaridade_e_linhagem() -> None:
     assert match.model_dump()["id"] == "luid-x"
     assert node.model_dump()["id"] == "luid-y"
     assert ref.model_dump()["id"] == "luid-z"
+
+
+# -- Capacidade 5: Hyper Datasources via transporte MCP (Tarefa 7.0) -----------
+
+
+@pytest.fixture
+def hyper_engine(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Substitui `hyper_session`/`load_settings` no módulo `hyper` das tools.
+
+    As tools de Hyper resolvem o motor e as configurações em tempo de chamada a
+    partir dos globais do próprio módulo; o mock é aplicado por teste, sem tocar
+    o runtime Hyper real. Retorna o `engine` mockado para configurar cenários.
+    """
+    engine = MagicMock(name="HyperEngine")
+
+    @contextlib.contextmanager
+    def fake_session():
+        yield engine
+
+    settings = MagicMock(name="Settings")
+    settings.hyper_max_result_rows = 1_000
+    settings.hyper_max_source_file_mb = 500
+    settings.hyper_max_inline_rows = 1_000
+    settings.hyper_max_extract_rows = 5_000_000
+
+    monkeypatch.setattr(hyper, "hyper_session", fake_session)
+    monkeypatch.setattr(hyper, "load_settings", lambda: settings)
+    return engine
+
+
+def test_servidor_expoe_dezessete_tools(mcp_server: server.FastMCP) -> None:
+    async def scenario() -> set[str]:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return {tool.name for tool in tools}
+
+    discovered = _await(scenario())
+
+    assert len(discovered) == 17
+    assert discovered == set(_EXPECTED_TOOLS)
+    # As sete tools de Hyper Datasources estão entre as descobertas.
+    assert _HYPER_TOOLS <= discovered
+
+
+def test_tools_hyper_declaram_schemas_de_entrada_validos(
+    mcp_server: server.FastMCP,
+) -> None:
+    async def scenario() -> dict[str, dict]:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return {
+            tool.name: tool.inputSchema for tool in tools if tool.name in _HYPER_TOOLS
+        }
+
+    schemas = _await(scenario())
+
+    assert set(schemas) == set(_HYPER_TOOLS)
+    for name, schema in schemas.items():
+        assert schema.get("type") == "object", f"{name} sem schema de objeto"
+        assert schema.get("properties"), f"{name} sem propriedades de entrada"
+    # Amostra: o parâmetro obrigatório de inspeção está declarado.
+    assert "hyper_path" in schemas["inspect_hyper_schema"]["properties"]
+
+
+def test_chamada_create_hyper_from_inline_via_cliente_mcp_serializa_resultado(
+    mcp_server: server.FastMCP, hyper_engine: MagicMock, tmp_path
+) -> None:
+    hyper_path = tmp_path / "referencia.hyper"
+    hyper_engine.create_table_from_rows.return_value = TableReport(
+        schema_name="Extract",
+        table_name="Extract",
+        columns=[
+            HyperColumn(name="codigo", type="big_int", nullable=False),
+            HyperColumn(name="nome", type="text", nullable=True),
+        ],
+        row_count=1,
+    )
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool(
+                "create_hyper_from_inline",
+                {
+                    "hyper_path": str(hyper_path),
+                    "table_name": "Extract",
+                    "columns": [
+                        {"name": "codigo", "type": "big_int", "nullable": False},
+                        {"name": "nome", "type": "text", "nullable": True},
+                    ],
+                    "rows": [[101, "Campinas"]],
+                },
+            )
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    assert payload["status"] == "success"
+    assert payload["source"] == "inline"
+    assert payload["table_name"] == "Extract"
+    assert payload["row_count"] == 1
+    assert [c["name"] for c in payload["columns"]] == ["codigo", "nome"]
+
+
+def test_chamada_query_hyper_com_arquivo_inexistente_serializa_tool_error(
+    mcp_server: server.FastMCP, hyper_engine: MagicMock, tmp_path
+) -> None:
+    ausente = tmp_path / "nao_existe.hyper"  # não criado
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool(
+                "query_hyper",
+                {"hyper_path": str(ausente), "query": "SELECT 1"},
+            )
+
+    result = _await(scenario())
+
+    # ToolError é retornado (não levantado): sucesso de protocolo com envelope de erro.
+    assert result.is_error is False
+    envelope = result.structured_content["result"]
+    assert envelope["status"] == "error"
+    assert envelope["error"]["code"] == "HYPER_INVALID_FILE"
+    assert envelope["error"]["message"]
+    # Validação local barata: o motor Hyper nunca foi acionado.
+    hyper_engine.query.assert_not_called()
+
+
+def test_volume_alert_serializado_via_transporte_mcp_mantem_status_volume_alert(
+    mcp_server: server.FastMCP, hyper_engine: MagicMock, tmp_path
+) -> None:
+    hyper_path = tmp_path / "grande.hyper"
+    # Limiar baixo + confirmação ausente → VolumeAlert (pré-execução, não bloqueia).
+    hyper_engine_settings = hyper.load_settings()
+    hyper_engine_settings.hyper_max_inline_rows = 1
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool(
+                "create_hyper_from_inline",
+                {
+                    "hyper_path": str(hyper_path),
+                    "table_name": "Extract",
+                    "columns": [{"name": "codigo", "type": "big_int"}],
+                    "rows": [[1], [2], [3]],
+                },
+            )
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    assert payload["status"] == "volume_alert"
+    assert payload["exceeded"]
+    assert payload["exceeded"][0]["dimension"] == "inline_rows"
+    assert payload["how_to_proceed"]
+    # A operação NÃO foi executada: o motor não gravou nada.
+    hyper_engine.create_table_from_rows.assert_not_called()
 
 
 def test_run_registra_ferramentas_e_inicia_stdio(

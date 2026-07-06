@@ -8,17 +8,27 @@ Exposições principais:
 - `audit_complexity` — auditoria de complexidade contra limiares.
 - `detect_blank_render` / `BlankRenderError` — heurística de tela em branco.
 - `rank_similar` — ranking fuzzy de similaridade.
+- `check_source_file` / `check_inline_rows` / `check_extracted_rows` — salvaguardas
+  puras de volume das operações Hyper.
 """
 
 from mcp_tableau.validation.complexity import audit_complexity
 from mcp_tableau.validation.similarity import rank_similar
 from mcp_tableau.validation.structure import StructureParseError, inspect_structure
 from mcp_tableau.validation.visual import BlankRenderError, detect_blank_render
+from mcp_tableau.validation.volume import (
+    check_extracted_rows,
+    check_inline_rows,
+    check_source_file,
+)
 
 __all__ = [
     "BlankRenderError",
     "StructureParseError",
     "audit_complexity",
+    "check_extracted_rows",
+    "check_inline_rows",
+    "check_source_file",
     "detect_blank_render",
     "inspect_structure",
     "rank_similar",
