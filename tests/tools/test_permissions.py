@@ -1,19 +1,25 @@
-"""Testes unitários das tools de resolução de usuários/grupos (`tools/permissions.py`).
+"""Testes unitários das tools de permissões (`tools/permissions.py`).
+
+Cobre as ferramentas de resolução (task_04) e as ferramentas CRUD de permissões
+(task_05: grant_permissions, revoke_permissions, list_permissions).
 
 O `TableauClient` e a sessão (`tableau_session`/`load_settings`) são sempre
 mockados no limite da integração — sem rede e sem Tableau real. Segue o padrão
 de monkeypatch-at-tool-module já consolidado em `test_deploy.py`.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
+import tableauserverclient as TSC
 
 from mcp_tableau.models import (
     ErrorCode,
     GroupInfo,
     GroupListResult,
     GroupMembersResult,
+    PermContentType,
+    PermissionsResult,
     ResolveResult,
     ToolError,
     UserInfo,
@@ -23,9 +29,30 @@ from mcp_tableau.tableau.client import TableauClientError
 from mcp_tableau.tools import permissions
 
 
+def _make_tsc_rule(
+    grantee_type: str = "user",
+    grantee_id: str = "u-1",
+    grantee_name: str = "alice",
+    capabilities: dict[str, str] | None = None,
+) -> MagicMock:
+    """Cria um mock de TSC.PermissionsRule para testes."""
+    rule = MagicMock()
+    if grantee_type == "group":
+        grantee = TSC.GroupItem()
+        grantee._id = grantee_id
+        grantee.name = grantee_name
+    else:
+        grantee = TSC.UserItem()
+        grantee._id = grantee_id
+        grantee.name = grantee_name
+    rule.grantee = grantee
+    rule.capabilities = capabilities or {"Read": "Allow"}
+    return rule
+
+
 @pytest.fixture
 def client() -> MagicMock:
-    """Mock do `TableauClient` com métodos de resolução de usuários/grupos."""
+    """Mock do `TableauClient` com métodos de resolução e permissões."""
     mock = MagicMock(name="TableauClient")
     # Defaults: listas vazias / resolve retorna dados fictícios
     mock.list_users.return_value = []
@@ -33,6 +60,27 @@ def client() -> MagicMock:
     mock.resolve_user.return_value = ("u-1", "Creator")
     mock.resolve_group.return_value = ("g-1", 5)
     mock.list_group_members.return_value = []
+    # Permission CRUD defaults
+    mock.get_content_project_id.return_value = "proj-1"
+    mock.get_project_lock_state.return_value = "ManagedByOwner"
+    mock.get_permissions.return_value = []
+    mock.update_permissions.return_value = []
+    mock.delete_permission.return_value = None
+    # _perm_dispatch for _get_content_name
+    mock_item = MagicMock()
+    mock_item.name = "Test Content"
+    mock_dispatch = {
+        PermContentType.workbook: (MagicMock(), MagicMock(return_value=mock_item)),
+        PermContentType.datasource: (MagicMock(), MagicMock(return_value=mock_item)),
+        PermContentType.project: (MagicMock(), MagicMock(return_value=mock_item)),
+        PermContentType.view: (MagicMock(), MagicMock(return_value=mock_item)),
+        PermContentType.flow: (MagicMock(), MagicMock(return_value=mock_item)),
+        PermContentType.virtual_connection: (
+            MagicMock(),
+            MagicMock(return_value=mock_item),
+        ),
+    }
+    type(mock)._perm_dispatch = PropertyMock(return_value=mock_dispatch)
     return mock
 
 
@@ -412,18 +460,21 @@ class TestListGroupMembers:
 class TestRegister:
     """Testes para a função `register(mcp)`."""
 
-    def test_registra_cinco_ferramentas(self) -> None:
+    def test_registra_oito_ferramentas(self) -> None:
         mcp = MagicMock(name="FastMCP")
 
         permissions.register(mcp)
 
-        assert mcp.tool.call_count == 5
+        assert mcp.tool.call_count == 8
         registered = [call.args[0] for call in mcp.tool.call_args_list]
         assert permissions.list_users in registered
         assert permissions.list_groups in registered
         assert permissions.resolve_user in registered
         assert permissions.resolve_group in registered
         assert permissions.list_group_members in registered
+        assert permissions.grant_permissions in registered
+        assert permissions.revoke_permissions in registered
+        assert permissions.list_permissions in registered
 
 
 # ==============================================================================
@@ -443,3 +494,657 @@ class TestSessionNotOpened:
         """resolve_user sempre abre sessão."""
         permissions.resolve_user(name="test")
         session.assert_called_once()
+
+
+# ==============================================================================
+# grant_permissions
+# ==============================================================================
+
+
+class TestGrantPermissions:
+    """Testes para a ferramenta `grant_permissions`."""
+
+    def test_happy_path_retorna_permissions_result(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions com inputs válidos retorna PermissionsResult."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+        client.get_permissions.return_value = [updated_rule]
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.status == "success"
+        assert result.content_type == "workbook"
+        assert result.content_id == "wb-1"
+        assert len(result.permissions) == 1
+        assert result.permissions[0].grantee_type == "user"
+        assert result.permissions[0].grantee_id == "u-1"
+        assert len(result.permissions[0].capabilities) == 2
+        client.resolve_user.assert_called_once_with("alice")
+        client.update_permissions.assert_called_once()
+
+    def test_content_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """content_type inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.grant_permissions(
+            content_type="invalid_type",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "invalid_type" in result.error.message
+        session.assert_not_called()
+
+    def test_grantee_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grantee_type inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="role",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "role" in result.error.message
+        session.assert_not_called()
+
+    def test_capabilities_vazio_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """capabilities vazio retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "vazio" in result.error.message
+        session.assert_not_called()
+
+    def test_capabilities_modo_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions com modo inválido em capabilities retorna ToolError."""
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Grant"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "Grant" in result.error.message
+        session.assert_not_called()
+
+    def test_grantee_nao_encontrado_retorna_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions com grantee inexistente retorna ToolError(NOT_FOUND)."""
+        client.resolve_user.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Usuário 'ghost' não encontrado no site."
+        )
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="ghost",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+        assert "ghost" in result.error.message
+        client.update_permissions.assert_not_called()
+
+    def test_projeto_bloqueado_retorna_locked_project_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions em projeto bloqueado retorna ToolError(LOCKED_PROJECT)."""
+        client.get_project_lock_state.return_value = "LockedToProject"
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.LOCKED_PROJECT
+        msg = result.error.message.lower()
+        assert "bloqueado" in msg or "locked" in msg
+        assert "set_default_permissions" in result.error.message
+        client.update_permissions.assert_not_called()
+
+    def test_project_content_type_pula_lock_check(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions no tipo 'project' não verifica lock state."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.return_value = [updated_rule]
+
+        result = permissions.grant_permissions(
+            content_type="project",
+            content_id="proj-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, PermissionsResult)
+        client.get_content_project_id.assert_not_called()
+        client.get_project_lock_state.assert_not_called()
+
+    def test_idempotente_regranting_sucede(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grant_permissions idempotente: re-conceder mesma capability não gera erro."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.return_value = [updated_rule]
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.status == "success"
+
+    def test_grant_com_grupo(self, client: MagicMock, session: MagicMock) -> None:
+        """grant_permissions com grantee_type='group' resolve grupo."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="group",
+            grantee_id="g-1",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.return_value = [updated_rule]
+
+        result = permissions.grant_permissions(
+            content_type="datasource",
+            content_id="ds-1",
+            grantee_type="group",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.permissions[0].grantee_type == "group"
+        client.resolve_group.assert_called_once_with("Analysts")
+
+    def test_show_tabs_enabled_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """View com showTabs=true retorna ToolError(SHOW_TABS_ENABLED)."""
+        client.update_permissions.side_effect = TableauClientError(
+            ErrorCode.SHOW_TABS_ENABLED,
+            "O workbook pai tem 'showTabs' habilitado. "
+            "Permissões em nível de view são ignoradas pelo Tableau nesse modo.",
+        )
+
+        result = permissions.grant_permissions(
+            content_type="view",
+            content_id="v-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.SHOW_TABS_ENABLED
+        assert "showTabs" in result.error.message
+
+    def test_tableau_client_error_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """TableauClientError durante update_permissions é convertido em ToolError."""
+        client.update_permissions.side_effect = TableauClientError(
+            ErrorCode.UPSTREAM_ERROR, "Falha no Tableau."
+        )
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.UPSTREAM_ERROR
+
+    def test_grant_deny_mode(self, client: MagicMock, session: MagicMock) -> None:
+        """grant_permissions com modo 'Deny' é aceito e aplicado."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Write": "Deny"},
+        )
+        client.get_permissions.return_value = [updated_rule]
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Write": "Deny"},
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.permissions[0].capabilities[0].mode == "Deny"
+
+    def test_locked_to_project_without_nested(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """LockedToProjectWithoutNested also triggers lock error."""
+        client.get_project_lock_state.return_value = "LockedToProjectWithoutNested"
+
+        result = permissions.grant_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.LOCKED_PROJECT
+
+
+# ==============================================================================
+# revoke_permissions
+# ==============================================================================
+
+
+class TestRevokePermissions:
+    """Testes para a ferramenta `revoke_permissions`."""
+
+    def test_happy_path_retorna_permissions_result_sem_capability_revogada(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions remove capabilities e retorna estado atualizado."""
+        existing_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+        # Primeira chamada: get_permissions retorna as regras atuais
+        # Segunda chamada: get_permissions retorna regras atualizadas (sem Write)
+        remaining_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.side_effect = [[existing_rule], [remaining_rule]]
+
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Write"],
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.status == "success"
+        assert result.content_type == "workbook"
+        assert result.content_id == "wb-1"
+        # The updated permissions should only have Read
+        assert len(result.permissions) == 1
+        cap_names = [c.name for c in result.permissions[0].capabilities]
+        assert "Read" in cap_names
+        assert "Write" not in cap_names
+        client.delete_permission.assert_called_once()
+
+    def test_content_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions com content_type inválido retorna ToolError."""
+        result = permissions.revoke_permissions(
+            content_type="bad_type",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+
+    def test_grantee_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions com grantee_type inválido retorna ToolError."""
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="admin",
+            grantee_name="alice",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+
+    def test_capabilities_vazio_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions com lista de capabilities vazia retorna ToolError."""
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=[],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "vazio" in result.error.message
+
+    def test_projeto_bloqueado_retorna_locked_project_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions em projeto bloqueado retorna ToolError(LOCKED_PROJECT)."""
+        client.get_project_lock_state.return_value = "LockedToProject"
+
+        result = permissions.revoke_permissions(
+            content_type="datasource",
+            content_id="ds-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.LOCKED_PROJECT
+        assert "set_default_permissions" in result.error.message
+        client.delete_permission.assert_not_called()
+
+    def test_grantee_nao_encontrado_retorna_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions com grantee inexistente retorna ToolError(NOT_FOUND)."""
+        client.resolve_user.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Usuário 'ghost' não encontrado."
+        )
+
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="ghost",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+
+    def test_revoke_multiplas_capabilities(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions remove múltiplas capabilities de uma vez."""
+        existing_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow", "ExportData": "Allow"},
+        )
+        empty_result = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"ExportData": "Allow"},
+        )
+        client.get_permissions.side_effect = [[existing_rule], [empty_result]]
+
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Read", "Write"],
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert client.delete_permission.call_count == 2
+
+    def test_show_tabs_enabled_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """revoke_permissions em view com showTabs=true retorna ToolError."""
+        existing_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.return_value = [existing_rule]
+        client.delete_permission.side_effect = TableauClientError(
+            ErrorCode.SHOW_TABS_ENABLED,
+            "O workbook pai tem 'showTabs' habilitado.",
+        )
+
+        result = permissions.revoke_permissions(
+            content_type="view",
+            content_id="v-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.SHOW_TABS_ENABLED
+
+    def test_tableau_client_error_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """TableauClientError durante revoke é convertido em ToolError."""
+        client.get_permissions.side_effect = TableauClientError(
+            ErrorCode.UPSTREAM_ERROR, "Falha no Tableau."
+        )
+
+        result = permissions.revoke_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.UPSTREAM_ERROR
+
+    def test_revoke_com_grupo(self, client: MagicMock, session: MagicMock) -> None:
+        """revoke_permissions com grantee_type='group' resolve grupo."""
+        existing_rule = _make_tsc_rule(
+            grantee_type="group",
+            grantee_id="g-1",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.side_effect = [[existing_rule], []]
+
+        result = permissions.revoke_permissions(
+            content_type="datasource",
+            content_id="ds-1",
+            grantee_type="group",
+            grantee_name="Analysts",
+            capabilities=["Read"],
+        )
+
+        assert isinstance(result, PermissionsResult)
+        client.resolve_group.assert_called_once_with("Analysts")
+
+
+# ==============================================================================
+# list_permissions
+# ==============================================================================
+
+
+class TestListPermissions:
+    """Testes para a ferramenta `list_permissions`."""
+
+    def test_retorna_permissions_result_com_todos_grantees(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions retorna PermissionsResult com todas as regras."""
+        user_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+        group_rule = _make_tsc_rule(
+            grantee_type="group",
+            grantee_id="g-1",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+        client.get_permissions.return_value = [user_rule, group_rule]
+
+        result = permissions.list_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.status == "success"
+        assert result.content_type == "workbook"
+        assert result.content_id == "wb-1"
+        assert len(result.permissions) == 2
+        assert result.permissions[0].grantee_type == "user"
+        assert result.permissions[0].grantee_name == "alice"
+        assert result.permissions[1].grantee_type == "group"
+        assert result.permissions[1].grantee_name == "Analysts"
+
+    def test_content_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions com content_type inválido retorna ToolError."""
+        result = permissions.list_permissions(
+            content_type="unknown",
+            content_id="x-1",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        session.assert_not_called()
+
+    def test_projeto_bloqueado_nao_bloqueia_leitura(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions em projeto bloqueado funciona (operação de leitura)."""
+        client.get_project_lock_state.return_value = "LockedToProject"
+        client.get_permissions.return_value = []
+
+        result = permissions.list_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+        )
+
+        assert isinstance(result, PermissionsResult)
+        # list_permissions não chama get_project_lock_state
+        client.get_project_lock_state.assert_not_called()
+
+    def test_sem_permissoes_retorna_lista_vazia(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions sem regras retorna permissions=[]."""
+        client.get_permissions.return_value = []
+
+        result = permissions.list_permissions(
+            content_type="project",
+            content_id="p-1",
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.permissions == []
+
+    def test_tableau_client_error_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """TableauClientError é convertido em ToolError."""
+        client.get_permissions.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Conteúdo não encontrado."
+        )
+
+        result = permissions.list_permissions(
+            content_type="workbook",
+            content_id="wb-404",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+
+    def test_content_name_retornado(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions retorna o nome do conteúdo no result."""
+        client.get_permissions.return_value = []
+
+        result = permissions.list_permissions(
+            content_type="workbook",
+            content_id="wb-1",
+        )
+
+        assert isinstance(result, PermissionsResult)
+        assert result.content_name == "Test Content"
+
+    def test_todos_content_types_aceitos(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_permissions aceita todos os PermContentType válidos."""
+        client.get_permissions.return_value = []
+
+        for ct in PermContentType:
+            result = permissions.list_permissions(
+                content_type=ct.value,
+                content_id="id-1",
+            )
+            assert isinstance(result, PermissionsResult), f"Failed for {ct}"

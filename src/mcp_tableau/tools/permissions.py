@@ -1,8 +1,13 @@
-"""Ferramentas MCP da Capacidade 6 (Permissions): resolução de usuários e grupos.
+"""Ferramentas MCP da Capacidade 6 (Permissions): resolução e CRUD de permissões.
 
 Ferramentas de resolução que permitem ao agente encontrar usuários/grupos por
-nome e inspecionar membros de grupo antes de aplicar permissões. Todas delegam
-ao `TableauClient` e devolvem modelos Pydantic tipados ou o envelope `ToolError`.
+nome e inspecionar membros de grupo antes de aplicar permissões. Ferramentas
+CRUD (`grant_permissions`, `revoke_permissions`, `list_permissions`) que aplicam,
+removem e auditam regras de permissão em qualquer tipo de conteúdo Tableau.
+
+Todas delegam ao `TableauClient` e devolvem modelos Pydantic tipados ou o
+envelope `ToolError`. Operações de escrita (grant/revoke) realizam detecção
+eager de projeto bloqueado e validação de showTabs antes da mutação.
 
 O acesso ao Tableau acontece exclusivamente via `tableau/client.py`; o registro
 no servidor FastMCP é feito por `register(mcp)`, chamado por `server.py`.
@@ -10,19 +15,29 @@ no servidor FastMCP é feito por `register(mcp)`, chamado por `server.py`.
 
 from __future__ import annotations
 
+import tableauserverclient as TSC
 from fastmcp import FastMCP
 
 from mcp_tableau.config import load_settings
 from mcp_tableau.models import (
+    CapabilityRule,
+    ErrorCode,
+    GranteePermissions,
     GroupInfo,
     GroupListResult,
     GroupMembersResult,
+    PermContentType,
+    PermissionsResult,
     ResolveResult,
     ToolError,
     UserInfo,
     UserListResult,
 )
-from mcp_tableau.tableau.client import TableauClientError, tableau_session
+from mcp_tableau.tableau.client import (
+    TableauClient,
+    TableauClientError,
+    tableau_session,
+)
 
 # -- Ferramentas de resolução --------------------------------------------------
 
@@ -152,13 +167,393 @@ def list_group_members(group_name: str) -> GroupMembersResult | ToolError:
     return GroupMembersResult(group_id=group_id, group_name=group_name, members=members)
 
 
+# -- Helpers internos -----------------------------------------------------------
+
+_VALID_GRANTEE_TYPES = frozenset({"user", "group"})
+_VALID_MODES = frozenset({"Allow", "Deny"})
+
+
+def _validate_content_type(content_type: str) -> PermContentType | ToolError:
+    """Valida e converte ``content_type`` string para o enum ``PermContentType``.
+
+    Retorna ``ToolError(VALIDATION_ERROR)`` se o valor não for válido.
+    """
+    try:
+        return PermContentType(content_type)
+    except ValueError:
+        valid = ", ".join(m.value for m in PermContentType)
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            f"content_type '{content_type}' inválido. Valores aceitos: {valid}.",
+        )
+
+
+def _validate_grantee_type(grantee_type: str) -> ToolError | None:
+    """Valida ``grantee_type`` é 'user' ou 'group'.
+
+    Retorna ``ToolError`` se inválido.
+    """
+    if grantee_type not in _VALID_GRANTEE_TYPES:
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            f"grantee_type '{grantee_type}' inválido. Use 'user' ou 'group'.",
+        )
+    return None
+
+
+def _validate_capabilities(capabilities: dict[str, str]) -> ToolError | None:
+    """Valida formato de capabilities dict: {name: mode}.
+
+    Retorna ``ToolError`` se inválido.
+    """
+    if not capabilities:
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            "capabilities não pode ser vazio.",
+        )
+    for name, mode in capabilities.items():
+        if mode not in _VALID_MODES:
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"Modo '{mode}' inválido para capability '{name}'. "
+                f"Use 'Allow' ou 'Deny'.",
+            )
+    return None
+
+
+def _resolve_grantee(
+    client: TableauClient, grantee_type: str, grantee_name: str
+) -> tuple[str, str | None] | ToolError:
+    """Resolve grantee_name para LUID. Retorna (luid, site_role|None) ou ToolError."""
+    try:
+        if grantee_type == "user":
+            user_id, site_role = client.resolve_user(grantee_name)
+            return (user_id, site_role)
+        else:
+            group_id, _ = client.resolve_group(grantee_name)
+            return (group_id, None)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+
+def _check_locked_project(
+    client: TableauClient, content_type: PermContentType, content_id: str
+) -> ToolError | None:
+    """Detecção eager de projeto bloqueado para operações de escrita.
+
+    Projetos não podem ser bloqueados em relação a si mesmos, então para
+    ``content_type == project`` o check é ignorado.
+
+    Retorna ``ToolError(LOCKED_PROJECT)`` se o projeto estiver bloqueado.
+    """
+    if content_type == PermContentType.project:
+        return None
+
+    try:
+        project_id = client.get_content_project_id(content_type, content_id)
+        lock_state = client.get_project_lock_state(project_id)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    if lock_state.startswith("LockedTo"):
+        return ToolError.of(
+            ErrorCode.LOCKED_PROJECT,
+            f"O projeto está bloqueado (modo: {lock_state}). "
+            "Permissões de conteúdo são gerenciadas pelo projeto. "
+            "Use 'set_default_permissions' no projeto para alterar as permissões.",
+        )
+    return None
+
+
+def _build_permission_rule(
+    grantee_type: str,
+    grantee_id: str,
+    capabilities: dict[str, str],
+) -> TSC.PermissionsRule:
+    """Constrói um ``TSC.PermissionsRule`` a partir dos parâmetros da tool."""
+    grantee = TSC.GroupItem() if grantee_type == "group" else TSC.UserItem()
+    grantee._id = grantee_id
+
+    caps: dict[str, str] = {}
+    for cap_name, mode in capabilities.items():
+        caps[cap_name] = mode
+
+    return TSC.PermissionsRule(
+        grantee=grantee,
+        capabilities=caps,
+    )
+
+
+def _build_revoke_rule(
+    grantee_type: str,
+    grantee_id: str,
+    capability_name: str,
+    mode: str,
+) -> TSC.PermissionsRule:
+    """Constrói uma regra de revogação com uma única capability."""
+    grantee = TSC.GroupItem() if grantee_type == "group" else TSC.UserItem()
+    grantee._id = grantee_id
+
+    return TSC.PermissionsRule(
+        grantee=grantee,
+        capabilities={capability_name: mode},
+    )
+
+
+def _rules_to_permissions_result(
+    rules: list[object],
+    content_type: PermContentType,
+    content_id: str,
+    content_name: str,
+) -> PermissionsResult:
+    """Converte lista de ``TSC.PermissionsRule`` para ``PermissionsResult``."""
+    grantee_perms: list[GranteePermissions] = []
+    for rule in rules:
+        grantee = getattr(rule, "grantee", None)
+        grantee_id = getattr(grantee, "id", "") or getattr(grantee, "_id", "")
+        grantee_name_val = getattr(grantee, "name", None) or ""
+
+        # Determinar tipo de grantee
+        if isinstance(grantee, TSC.GroupItem):
+            g_type = "group"
+        else:
+            g_type = "user"
+
+        caps_dict = getattr(rule, "capabilities", {}) or {}
+        caps = [
+            CapabilityRule(name=cap_name, mode=cap_mode)
+            for cap_name, cap_mode in caps_dict.items()
+        ]
+
+        grantee_perms.append(
+            GranteePermissions(
+                grantee_type=g_type,
+                grantee_id=grantee_id,
+                grantee_name=grantee_name_val,
+                capabilities=caps,
+            )
+        )
+
+    return PermissionsResult(
+        content_type=content_type.value,
+        content_id=content_id,
+        content_name=content_name,
+        permissions=grantee_perms,
+    )
+
+
+# -- Ferramentas CRUD de permissões --------------------------------------------
+
+
+def grant_permissions(
+    content_type: str,
+    content_id: str,
+    grantee_type: str,
+    grantee_name: str,
+    capabilities: dict[str, str],
+) -> PermissionsResult | ToolError:
+    """Concede capacidades a um usuário ou grupo em um item de conteúdo.
+
+    Aplica permissões de forma idempotente: conceder uma capability já existente
+    não gera erro. Antes de aplicar, realiza detecção eager de projeto bloqueado
+    e validação de showTabs para views.
+
+    Args:
+        content_type: Tipo de conteúdo ('project', 'workbook', 'datasource',
+            'view', 'flow', 'virtual_connection').
+        content_id: LUID do item de conteúdo.
+        grantee_type: 'user' ou 'group'.
+        grantee_name: Nome do usuário ou grupo a receber as permissões.
+        capabilities: Mapa de capability → modo.
+            Ex.: {"Read": "Allow", "Write": "Deny"}.
+
+    Returns:
+        ``PermissionsResult`` com o estado atualizado das permissões do conteúdo,
+        ou ``ToolError`` com código acionável.
+    """
+    # Validação de inputs
+    ct = _validate_content_type(content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    err = _validate_grantee_type(grantee_type)
+    if err is not None:
+        return err
+
+    err = _validate_capabilities(capabilities)
+    if err is not None:
+        return err
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # Resolver grantee
+            resolved = _resolve_grantee(client, grantee_type, grantee_name)
+            if isinstance(resolved, ToolError):
+                return resolved
+            grantee_id, _ = resolved
+
+            # Check de projeto bloqueado (eager)
+            lock_err = _check_locked_project(client, ct, content_id)
+            if lock_err is not None:
+                return lock_err
+
+            # Construir e aplicar regra
+            rule = _build_permission_rule(grantee_type, grantee_id, capabilities)
+            client.update_permissions(ct, content_id, [rule])
+
+            # Buscar estado atualizado
+            updated_rules = client.get_permissions(ct, content_id)
+
+            # Obter nome do conteúdo (best-effort)
+            content_name = _get_content_name(client, ct, content_id)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_permissions_result(updated_rules, ct, content_id, content_name)
+
+
+def revoke_permissions(
+    content_type: str,
+    content_id: str,
+    grantee_type: str,
+    grantee_name: str,
+    capabilities: list[str],
+) -> PermissionsResult | ToolError:
+    """Revoga capacidades de um usuário ou grupo em um item de conteúdo.
+
+    Remove as capabilities listadas (independente do modo Allow/Deny). Antes
+    de aplicar, realiza detecção eager de projeto bloqueado e validação de
+    showTabs para views.
+
+    Args:
+        content_type: Tipo de conteúdo ('project', 'workbook', 'datasource',
+            'view', 'flow', 'virtual_connection').
+        content_id: LUID do item de conteúdo.
+        grantee_type: 'user' ou 'group'.
+        grantee_name: Nome do usuário ou grupo.
+        capabilities: Lista de nomes de capability a remover. Ex.: ["Read", "Write"].
+
+    Returns:
+        ``PermissionsResult`` com o estado atualizado das permissões do conteúdo,
+        ou ``ToolError`` com código acionável.
+    """
+    # Validação de inputs
+    ct = _validate_content_type(content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    err = _validate_grantee_type(grantee_type)
+    if err is not None:
+        return err
+
+    if not capabilities:
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            "capabilities não pode ser vazio.",
+        )
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # Resolver grantee
+            resolved = _resolve_grantee(client, grantee_type, grantee_name)
+            if isinstance(resolved, ToolError):
+                return resolved
+            grantee_id, _ = resolved
+
+            # Check de projeto bloqueado (eager)
+            lock_err = _check_locked_project(client, ct, content_id)
+            if lock_err is not None:
+                return lock_err
+
+            # Buscar permissões atuais para descobrir o modo de cada capability
+            current_rules = client.get_permissions(ct, content_id)
+            caps_to_revoke = set(capabilities)
+
+            # Localizar o modo de cada capability que pertence ao grantee
+            for rule in current_rules:
+                grantee = getattr(rule, "grantee", None)
+                rule_grantee_id = getattr(grantee, "id", "") or getattr(
+                    grantee, "_id", ""
+                )
+                if rule_grantee_id != grantee_id:
+                    continue
+                rule_caps = getattr(rule, "capabilities", {}) or {}
+                for cap_name, cap_mode in rule_caps.items():
+                    if cap_name in caps_to_revoke:
+                        revoke_rule = _build_revoke_rule(
+                            grantee_type, grantee_id, cap_name, cap_mode
+                        )
+                        client.delete_permission(ct, content_id, revoke_rule)
+
+            # Buscar estado atualizado
+            updated_rules = client.get_permissions(ct, content_id)
+
+            # Obter nome do conteúdo (best-effort)
+            content_name = _get_content_name(client, ct, content_id)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_permissions_result(updated_rules, ct, content_id, content_name)
+
+
+def list_permissions(
+    content_type: str,
+    content_id: str,
+) -> PermissionsResult | ToolError:
+    """Lista todas as permissões explícitas de um item de conteúdo.
+
+    Operação somente de leitura — não realiza check de projeto bloqueado.
+
+    Args:
+        content_type: Tipo de conteúdo ('project', 'workbook', 'datasource',
+            'view', 'flow', 'virtual_connection').
+        content_id: LUID do item de conteúdo.
+
+    Returns:
+        ``PermissionsResult`` com todas as regras de permissão do conteúdo,
+        ou ``ToolError`` com código acionável.
+    """
+    # Validação de input
+    ct = _validate_content_type(content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    try:
+        with tableau_session(load_settings()) as client:
+            rules = client.get_permissions(ct, content_id)
+            content_name = _get_content_name(client, ct, content_id)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_permissions_result(rules, ct, content_id, content_name)
+
+
+def _get_content_name(
+    client: TableauClient, content_type: PermContentType, content_id: str
+) -> str:
+    """Obtém o nome do conteúdo a partir do client (best-effort).
+
+    Se falhar, retorna string vazia em vez de propagar erro.
+    """
+    try:
+        # Usa o dispatch interno: pega o item via get_by_id
+        _, fetch_item = client._perm_dispatch[content_type]
+        item = fetch_item(content_id)
+        return getattr(item, "name", "") or ""
+    except Exception:  # noqa: BLE001 - best-effort, não bloqueia o resultado
+        return ""
+
+
 # -- Registro ------------------------------------------------------------------
 
 
 def register(mcp: FastMCP) -> None:
-    """Registra as ferramentas de resolução de usuários/grupos na instância FastMCP."""
+    """Registra as ferramentas de permissões na instância FastMCP."""
     mcp.tool(list_users)
     mcp.tool(list_groups)
     mcp.tool(resolve_user)
     mcp.tool(resolve_group)
     mcp.tool(list_group_members)
+    mcp.tool(grant_permissions)
+    mcp.tool(revoke_permissions)
+    mcp.tool(list_permissions)
