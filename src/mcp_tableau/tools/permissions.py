@@ -1191,6 +1191,117 @@ def effective_permissions(
     )
 
 
+# -- Replace Permissions (Phase 2) ---------------------------------------------
+
+
+def replace_permissions(
+    content_type: str,
+    content_id: str,
+    permissions: list[dict[str, object]],
+) -> PermissionsResult | ToolError:
+    """Substitui atomicamente TODAS as regras de permissão de um item de conteúdo.
+
+    Remove todas as regras existentes e aplica o novo conjunto fornecido em uma
+    única operação. Útil para redefinir um conteúdo a um estado de permissão
+    conhecido. Se a lista ``permissions`` for vazia, todas as permissões do
+    conteúdo são removidas (reset).
+
+    A operação é atômica em relação à resolução: se qualquer grantee na lista
+    não puder ser resolvido, nenhuma alteração é aplicada. Realiza detecção
+    eager de projeto bloqueado antes de qualquer mutação.
+
+    Args:
+        content_type: Tipo de conteúdo ('project', 'workbook', 'datasource',
+            'view', 'flow', 'virtual_connection').
+        content_id: LUID do item de conteúdo.
+        permissions: Lista de dicts com as novas regras de permissão. Cada dict
+            deve conter:
+            - ``grantee_type``: 'user' ou 'group'
+            - ``grantee_name``: nome do usuário ou grupo
+            - ``capabilities``: dict de capability → modo (ex.: {"Read": "Allow"})
+            Se vazia, todas as permissões existentes são removidas.
+
+    Returns:
+        ``PermissionsResult`` com o estado final das permissões do conteúdo,
+        ou ``ToolError`` com código acionável.
+    """
+    # Validação de content_type
+    ct = _validate_content_type(content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    # Validar estrutura de cada entrada na lista de permissions
+    for i, entry in enumerate(permissions):
+        gt = entry.get("grantee_type")
+        if not isinstance(gt, str):
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"permissions[{i}].grantee_type é obrigatório e deve ser string.",
+            )
+        err = _validate_grantee_type(gt)
+        if err is not None:
+            return err
+
+        gn = entry.get("grantee_name")
+        if not isinstance(gn, str) or not gn:
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"permissions[{i}].grantee_name é obrigatório "
+                "e deve ser string não-vazia.",
+            )
+
+        caps = entry.get("capabilities")
+        if not isinstance(caps, dict):
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"permissions[{i}].capabilities é obrigatório e deve ser dict.",
+            )
+        err = _validate_capabilities(caps)
+        if err is not None:
+            return err
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # Check de projeto bloqueado (eager)
+            lock_err = _check_locked_project(client, ct, content_id)
+            if lock_err is not None:
+                return lock_err
+
+            # Resolver TODOS os grantees antes de qualquer mutação (atomicidade)
+            resolved_entries: list[tuple[str, str, dict[str, str]]] = []
+            for entry in permissions:
+                gt = str(entry["grantee_type"])
+                gn = str(entry["grantee_name"])
+                caps = entry["capabilities"]
+                assert isinstance(caps, dict)  # noqa: S101
+
+                resolved = _resolve_grantee(client, gt, gn)
+                if isinstance(resolved, ToolError):
+                    return resolved
+                grantee_id, _ = resolved
+                resolved_entries.append((gt, grantee_id, caps))  # type: ignore[arg-type]
+
+            # Deletar todas as permissões existentes
+            current_rules = client.get_permissions(ct, content_id)
+            for rule in current_rules:
+                client.delete_permission(ct, content_id, rule)
+
+            # Aplicar novas regras
+            for gt, grantee_id, caps in resolved_entries:
+                rule = _build_permission_rule(gt, grantee_id, caps)
+                client.update_permissions(ct, content_id, [rule])
+
+            # Buscar estado final
+            final_rules = client.get_permissions(ct, content_id)
+
+            # Obter nome do conteúdo (best-effort)
+            content_name = _get_content_name(client, ct, content_id)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_permissions_result(final_rules, ct, content_id, content_name)
+
+
 # -- Registro ------------------------------------------------------------------
 
 
@@ -1207,3 +1318,4 @@ def register(mcp: FastMCP) -> None:
     mcp.tool(list_default_permissions)
     mcp.tool(set_default_permissions)
     mcp.tool(effective_permissions)
+    mcp.tool(replace_permissions)
