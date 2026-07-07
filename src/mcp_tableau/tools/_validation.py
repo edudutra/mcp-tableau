@@ -45,12 +45,12 @@ def require_output_destination(
         expected = ", ".join(sorted(allowed_suffixes))
         return ToolError.of(
             ErrorCode.VALIDATION_ERROR,
-            f"Output path '{path}' has extension '{suffix}'; "
-            f"expected one of: {expected}.",
+            f"O caminho de saída '{path}' tem extensão '{suffix}'; "
+            f"esperado: {expected}.",
         )
     if not path.parent.is_dir():
         return ToolError.of(
             ErrorCode.VALIDATION_ERROR,
-            f"Parent directory '{path.parent}' does not exist.",
+            f"O diretório-pai '{path.parent}' não existe.",
         )
     return None

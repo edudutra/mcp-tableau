@@ -75,5 +75,5 @@ def test_require_output_destination_extensao_errada_e_pai_ausente_extensao_vence
     result = require_output_destination(path, {".png"})
     assert isinstance(result, ToolError)
     assert result.error.code is ErrorCode.VALIDATION_ERROR
-    assert "extension" in result.error.message
-    assert "does not exist" not in result.error.message
+    assert "extensão" in result.error.message
+    assert "não existe" not in result.error.message

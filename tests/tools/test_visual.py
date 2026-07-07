@@ -230,7 +230,7 @@ class TestRenderViewImageFileSave:
         assert isinstance(result, tuple)
         payload, _ = result
         assert payload.save_error is not None
-        assert "does not exist" in payload.save_error
+        assert "não existe" in payload.save_error
         assert payload.output_path is None
         assert payload.file_size_bytes is None
 
@@ -558,7 +558,7 @@ class TestRenderWorkbookPdfFileSave:
         assert isinstance(result, tuple)
         payload, _ = result
         assert payload.save_error is not None
-        assert "does not exist" in payload.save_error
+        assert "não existe" in payload.save_error
         assert payload.output_path is None
         assert payload.file_size_bytes is None
 

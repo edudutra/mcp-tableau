@@ -65,7 +65,9 @@ def render_view_image(
     Returns:
         Tupla `(RenderImageResult, Image)` em caso de sucesso sem `output_path`,
         ou com `output_path` e `include_content=True`. Bare `RenderImageResult`
-        quando `output_path` definido e `include_content=False`. `ToolError` com
+        quando `output_path` definido, `include_content=False` **e a gravação teve
+        sucesso**; se a gravação falhar (`save_error` preenchido) a imagem inline é
+        sempre devolvida para o agente não ficar sem conteúdo. `ToolError` com
         código acionável em caso de falha.
     """
     applied_filters = dict(filters) if filters else {}
@@ -80,7 +82,7 @@ def render_view_image(
         if not overwrite and resolved_path.exists():
             return ToolError.of(
                 ErrorCode.VALIDATION_ERROR,
-                f"File already exists at '{resolved_path}' and overwrite=false.",
+                f"Já existe arquivo em '{resolved_path}' e overwrite=false.",
             )
 
         # Validate extension and parent directory
@@ -122,7 +124,9 @@ def render_view_image(
     )
 
     # --- Conditional return ---
-    if output_path is not None and not include_content:
+    # A failed save (save_error set) always falls through to the tuple return so
+    # the agent still gets the rendered bytes inline — never left empty-handed.
+    if output_path is not None and not include_content and save_error is None:
         return result
     return result, Image(data=png, format="png")
 
@@ -162,7 +166,9 @@ def render_workbook_pdf(
     Returns:
         Tupla `(RenderPdfResult, File)` em caso de sucesso sem `output_path`,
         ou com `output_path` e `include_content=True`. Bare `RenderPdfResult`
-        quando `output_path` definido e `include_content=False`. `ToolError` com
+        quando `output_path` definido, `include_content=False` **e a gravação teve
+        sucesso**; se a gravação falhar (`save_error` preenchido) o arquivo inline é
+        sempre devolvido para o agente não ficar sem conteúdo. `ToolError` com
         código acionável em caso de falha.
     """
     applied_filters = dict(filters) if filters else {}
@@ -177,7 +183,7 @@ def render_workbook_pdf(
         if not overwrite and resolved_path.exists():
             return ToolError.of(
                 ErrorCode.VALIDATION_ERROR,
-                f"File already exists at '{resolved_path}' and overwrite=false.",
+                f"Já existe arquivo em '{resolved_path}' e overwrite=false.",
             )
 
         # Validate extension and parent directory
@@ -221,7 +227,9 @@ def render_workbook_pdf(
     )
 
     # --- Conditional return ---
-    if output_path is not None and not include_content:
+    # A failed save (save_error set) always falls through to the tuple return so
+    # the agent still gets the rendered bytes inline — never left empty-handed.
+    if output_path is not None and not include_content and save_error is None:
         return result
     return result, File(data=pdf, format="pdf", name=view_id)
 

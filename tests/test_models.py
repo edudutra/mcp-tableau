@@ -420,4 +420,3 @@ class TestRenderPdfResult:
         result = RenderPdfResult(view_id="v", page_type="A4")
 
         assert result.mime_type == "application/pdf"
-
