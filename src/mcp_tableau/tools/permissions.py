@@ -22,6 +22,8 @@ from mcp_tableau.config import load_settings
 from mcp_tableau.models import (
     CapabilityRule,
     DefaultPermissionsResult,
+    EffectiveCapability,
+    EffectivePermissionsResult,
     ErrorCode,
     GranteePermissions,
     GroupInfo,
@@ -38,6 +40,178 @@ from mcp_tableau.tableau.client import (
     TableauClient,
     TableauClientError,
     tableau_session,
+)
+
+# -- Constante de teto de capabilities por site role (ADR-002) -----------------
+# Mapeia cada site role ao conjunto MÁXIMO de capabilities permitidas.
+# Admins (ServerAdministrator, SiteAdministratorCreator, SiteAdministratorExplorer)
+# têm bypass total e não são limitados por este mapa.
+# Baseado em: https://help.tableau.com/current/server-linux/en-us/permission_license_siterole.htm
+
+SITE_ROLE_CAPS: dict[str, frozenset[str]] = {
+    "Creator": frozenset(
+        {
+            # Projects
+            "View",
+            "Publish",
+            # Workbooks
+            "Read",
+            "Filter",
+            "ViewComments",
+            "AddComment",
+            "ExportImage",
+            "ExportData",
+            "ShareView",
+            "ViewUnderlyingData",
+            "WebEdit",
+            "DownloadWorkbook",
+            "Write",
+            "CreateRefreshMetrics",
+            "Move",
+            "Delete",
+            "ChangePermissions",
+            "RefreshExtracts",
+            "ExportXml",
+            # Datasources
+            "Connect",
+            "DownloadDatasource",
+            "CreateMetricDefinitions",
+            # Flows
+            "DownloadFlow",
+            "WebEditFlow",
+            "RunFlow",
+            "Execute",
+            # General
+            "ChangeHierarchy",
+            "RunExplainData",
+        }
+    ),
+    "Explorer (Can Publish)": frozenset(
+        {
+            # Projects
+            "View",
+            "Publish",
+            # Workbooks
+            "Read",
+            "Filter",
+            "ViewComments",
+            "AddComment",
+            "ExportImage",
+            "ExportData",
+            "ShareView",
+            "ViewUnderlyingData",
+            "WebEdit",
+            "DownloadWorkbook",
+            "Write",
+            "CreateRefreshMetrics",
+            "Move",
+            "Delete",
+            "ChangePermissions",
+            "RefreshExtracts",
+            "ExportXml",
+            # Datasources
+            "Connect",
+            "DownloadDatasource",
+            "CreateMetricDefinitions",
+            # Flows
+            "DownloadFlow",
+            "RunFlow",
+            "Execute",
+            # General
+            "ChangeHierarchy",
+            "RunExplainData",
+        }
+    ),
+    "ExplorerCanPublish": frozenset(
+        {
+            # Alias for TSC site_role value
+            "View",
+            "Publish",
+            "Read",
+            "Filter",
+            "ViewComments",
+            "AddComment",
+            "ExportImage",
+            "ExportData",
+            "ShareView",
+            "ViewUnderlyingData",
+            "WebEdit",
+            "DownloadWorkbook",
+            "Write",
+            "CreateRefreshMetrics",
+            "Move",
+            "Delete",
+            "ChangePermissions",
+            "RefreshExtracts",
+            "ExportXml",
+            "Connect",
+            "DownloadDatasource",
+            "CreateMetricDefinitions",
+            "DownloadFlow",
+            "RunFlow",
+            "Execute",
+            "ChangeHierarchy",
+            "RunExplainData",
+        }
+    ),
+    "Explorer": frozenset(
+        {
+            # Projects
+            "View",
+            # Workbooks
+            "Read",
+            "Filter",
+            "ViewComments",
+            "AddComment",
+            "ExportImage",
+            "ExportData",
+            "ShareView",
+            "ViewUnderlyingData",
+            "WebEdit",
+            "DownloadWorkbook",
+            # Datasources
+            "Connect",
+            "DownloadDatasource",
+            # Flows
+            "DownloadFlow",
+            # General
+            "RunExplainData",
+        }
+    ),
+    "Viewer": frozenset(
+        {
+            # Projects
+            "View",
+            # Workbooks
+            "Read",
+            "Filter",
+            "ViewComments",
+            "AddComment",
+            "ExportImage",
+            "ExportData",
+            # Datasources
+            "Connect",
+            # General
+            "RunExplainData",
+        }
+    ),
+    "Unlicensed": frozenset(),
+    "ReadOnly": frozenset(
+        {
+            "View",
+            "Read",
+        }
+    ),
+}
+
+# Site roles com bypass total (admin).
+_ADMIN_SITE_ROLES = frozenset(
+    {
+        "ServerAdministrator",
+        "SiteAdministratorCreator",
+        "SiteAdministrator",
+        "SiteAdministratorExplorer",
+    }
 )
 
 # -- Ferramentas de resolução --------------------------------------------------
@@ -725,6 +899,298 @@ def set_default_permissions(
     )
 
 
+# -- Effective Permissions (Phase 2) -------------------------------------------
+
+# Todas as capabilities conhecidas do Tableau que devem ser avaliadas.
+_ALL_CAPABILITIES = frozenset(
+    {
+        "View",
+        "Publish",
+        "Read",
+        "Filter",
+        "ViewComments",
+        "AddComment",
+        "ExportImage",
+        "ExportData",
+        "ShareView",
+        "ViewUnderlyingData",
+        "WebEdit",
+        "DownloadWorkbook",
+        "Write",
+        "CreateRefreshMetrics",
+        "Move",
+        "Delete",
+        "ChangePermissions",
+        "RefreshExtracts",
+        "ExportXml",
+        "Connect",
+        "DownloadDatasource",
+        "CreateMetricDefinitions",
+        "DownloadFlow",
+        "WebEditFlow",
+        "RunFlow",
+        "Execute",
+        "ChangeHierarchy",
+        "RunExplainData",
+    }
+)
+
+
+def _compute_effective_capabilities(
+    user_id: str,
+    site_role: str,
+    is_owner: bool,
+    is_admin: bool,
+    rules: list[object],
+    user_group_ids: set[str],
+) -> list[EffectiveCapability]:
+    """Algoritmo puro de avaliação de permissões efetivas (ADR-002).
+
+    Ordem de avaliação:
+    1. Admin bypass → todas Allow com reason "admin"
+    2. Ownership → todas Allow com reason "ownership"
+    3. Para cada capability:
+       a. Se existe regra explícita no nível de usuário → usa o modo (reason: user_rule)
+       b. Senão, agrega regras dos grupos do usuário:
+          - Se QUALQUER grupo tem Deny → Deny (reason: group_rule, Deny-wins)
+          - Se ALGUM grupo tem Allow e NENHUM tem Deny → Allow (reason: group_rule)
+       c. Senão → Deny (reason: not_granted)
+    4. Aplica teto do site role: se o resultado é Allow mas a capability não está no
+       SITE_ROLE_CAPS do role → Deny (reason: site_role_cap)
+    """
+    # Descobrir quais capabilities estão presentes nas regras
+    caps_in_rules: set[str] = set()
+    for rule in rules:
+        caps_dict = getattr(rule, "capabilities", {}) or {}
+        caps_in_rules.update(caps_dict.keys())
+
+    # Usar apenas capabilities que aparecem nas regras + _ALL_CAPABILITIES conhecidas
+    all_caps = sorted(caps_in_rules | _ALL_CAPABILITIES)
+
+    # Admin bypass
+    if is_admin:
+        return [
+            EffectiveCapability(name=cap, mode="Allow", reason="admin")
+            for cap in all_caps
+        ]
+
+    # Ownership override
+    if is_owner:
+        return [
+            EffectiveCapability(name=cap, mode="Allow", reason="ownership")
+            for cap in all_caps
+        ]
+
+    # Separar regras por tipo (user vs group)
+    user_caps: dict[str, str] = {}  # cap_name → mode
+    group_caps: dict[str, list[str]] = {}  # cap_name → [modes from groups]
+
+    for rule in rules:
+        grantee = getattr(rule, "grantee", None)
+        grantee_id = getattr(grantee, "id", "") or getattr(grantee, "_id", "")
+        caps_dict = getattr(rule, "capabilities", {}) or {}
+
+        if isinstance(grantee, TSC.UserItem):
+            if grantee_id == user_id:
+                for cap_name, mode in caps_dict.items():
+                    user_caps[cap_name] = mode
+        elif isinstance(grantee, TSC.GroupItem):
+            if grantee_id in user_group_ids:
+                for cap_name, mode in caps_dict.items():
+                    if cap_name not in group_caps:
+                        group_caps[cap_name] = []
+                    group_caps[cap_name].append(mode)
+
+    # Obter teto do site role
+    role_caps = SITE_ROLE_CAPS.get(site_role)
+
+    results: list[EffectiveCapability] = []
+    for cap in all_caps:
+        mode: str
+        reason: str
+
+        # Passo 3a: regra explícita de usuário
+        if cap in user_caps:
+            mode = user_caps[cap]
+            reason = "user_rule"
+        # Passo 3b: agregação de grupos (Deny-wins)
+        elif cap in group_caps:
+            modes = group_caps[cap]
+            if "Deny" in modes:
+                mode = "Deny"
+                reason = "group_rule"
+            else:
+                mode = "Allow"
+                reason = "group_rule"
+        # Passo 3c: nenhuma regra
+        else:
+            mode = "Deny"
+            reason = "not_granted"
+
+        # Passo 4: teto do site role (apenas se temos mapeamento para o role)
+        if mode == "Allow" and role_caps is not None and cap not in role_caps:
+            mode = "Deny"
+            reason = "site_role_cap"
+
+        results.append(EffectiveCapability(name=cap, mode=mode, reason=reason))
+
+    return results
+
+
+def _build_summary(
+    capabilities: list[EffectiveCapability],
+    is_admin: bool,
+    is_owner: bool,
+    site_role: str,
+) -> str:
+    """Gera resumo legível das permissões efetivas."""
+    if is_admin:
+        return f"Acesso total (admin bypass, site role: {site_role})."
+
+    if is_owner:
+        return f"Acesso total como proprietário do conteúdo (site role: {site_role})."
+
+    allowed = [c.name for c in capabilities if c.mode == "Allow"]
+    denied = [c.name for c in capabilities if c.mode == "Deny"]
+
+    if not allowed:
+        return (
+            f"Sem acesso efetivo (site role: {site_role}). "
+            "Todas as capabilities negadas."
+        )
+
+    if not denied:
+        return (
+            f"Acesso completo (site role: {site_role}). "
+            f"Capabilities: {', '.join(allowed)}."
+        )
+
+    return (
+        f"Acesso parcial (site role: {site_role}). "
+        f"Permitido: {', '.join(allowed[:10])}"
+        f"{'...' if len(allowed) > 10 else ''}. "
+        f"Negado: {', '.join(denied[:10])}"
+        f"{'...' if len(denied) > 10 else ''}."
+    )
+
+
+def effective_permissions(
+    content_type: str,
+    content_id: str,
+    user_name: str,
+) -> EffectivePermissionsResult | ToolError:
+    """Computa as permissões efetivas de um usuário em um item de conteúdo.
+
+    Resultado **computado localmente** (não autoritativo): combina regras
+    explícitas de permissão, agregação de grupos (Deny-wins), teto do site role
+    e overrides de propriedade/admin conforme ADR-002.
+
+    O algoritmo:
+    1. Resolve o usuário e obtém site role.
+    2. Verifica se é admin (bypass total) ou proprietário (acesso total).
+    3. Busca permissões raw do conteúdo.
+    4. Para grupos com regras no conteúdo, verifica membros para identificar
+       os grupos do usuário (lazy-fetch, evita listar TODOS os grupos).
+    5. Aplica: regras de usuário → agregação de grupo (Deny-wins) → teto site role.
+
+    Args:
+        content_type: Tipo de conteúdo ('project', 'workbook', 'datasource',
+            'view', 'flow', 'virtual_connection').
+        content_id: LUID do item de conteúdo.
+        user_name: Nome exato do usuário cujas permissões efetivas serão calculadas.
+
+    Returns:
+        ``EffectivePermissionsResult`` com capabilities efetivas e resumo, ou
+        ``ToolError`` com código ``NOT_FOUND`` ou erro de rede/auth.
+    """
+    # Validação de content_type
+    ct = _validate_content_type(content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # 1. Resolver usuário
+            try:
+                user_id, site_role = client.resolve_user(user_name)
+            except TableauClientError as exc:
+                return ToolError.of(exc.code, exc.message)
+
+            # 2. Verificar admin
+            is_admin = site_role in _ADMIN_SITE_ROLES
+
+            # 3. Buscar permissões raw do conteúdo (também valida que o conteúdo existe)
+            try:
+                rules = client.get_permissions(ct, content_id)
+            except TableauClientError as exc:
+                return ToolError.of(exc.code, exc.message)
+
+            # 4. Verificar ownership
+            is_owner = False
+            try:
+                _, fetch_item = client._perm_dispatch[ct]
+                item = fetch_item(content_id)
+                owner_id = getattr(item, "owner_id", None)
+                if owner_id == user_id:
+                    is_owner = True
+            except Exception:  # noqa: BLE001 - best-effort ownership check
+                pass
+
+            # 5. Identificar grupos do usuário que têm regras no conteúdo (lazy)
+            user_group_ids: set[str] = set()
+            if not is_admin and not is_owner:
+                # Coletar IDs de grupos que aparecem nas regras
+                group_ids_in_rules: set[str] = set()
+                for rule in rules:
+                    grantee = getattr(rule, "grantee", None)
+                    if isinstance(grantee, TSC.GroupItem):
+                        grantee_id = getattr(grantee, "id", "") or getattr(
+                            grantee, "_id", ""
+                        )
+                        if grantee_id:
+                            group_ids_in_rules.add(grantee_id)
+
+                # Para cada grupo com regras, verificar se o usuário é membro
+                for group_id in group_ids_in_rules:
+                    try:
+                        members = client.list_group_members(group_id)
+                        for member_id, _, _ in members:
+                            if member_id == user_id:
+                                user_group_ids.add(group_id)
+                                break
+                    except TableauClientError:
+                        # Se não conseguir listar membros, ignora o grupo
+                        pass
+
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    # 6. Avaliar capabilities efetivas (lógica pura)
+    capabilities = _compute_effective_capabilities(
+        user_id=user_id,
+        site_role=site_role,
+        is_owner=is_owner,
+        is_admin=is_admin,
+        rules=rules,
+        user_group_ids=user_group_ids,
+    )
+
+    # 7. Gerar resumo
+    summary = _build_summary(capabilities, is_admin, is_owner, site_role)
+
+    return EffectivePermissionsResult(
+        content_type=ct.value,
+        content_id=content_id,
+        user_id=user_id,
+        user_name=user_name,
+        site_role=site_role,
+        is_owner=is_owner,
+        is_admin=is_admin,
+        capabilities=capabilities,
+        summary=summary,
+    )
+
+
 # -- Registro ------------------------------------------------------------------
 
 
@@ -740,3 +1206,4 @@ def register(mcp: FastMCP) -> None:
     mcp.tool(list_permissions)
     mcp.tool(list_default_permissions)
     mcp.tool(set_default_permissions)
+    mcp.tool(effective_permissions)

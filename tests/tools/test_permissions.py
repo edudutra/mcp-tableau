@@ -15,6 +15,8 @@ import tableauserverclient as TSC
 
 from mcp_tableau.models import (
     DefaultPermissionsResult,
+    EffectiveCapability,
+    EffectivePermissionsResult,
     ErrorCode,
     GroupInfo,
     GroupListResult,
@@ -470,7 +472,7 @@ class TestRegister:
 
         permissions.register(mcp)
 
-        assert mcp.tool.call_count == 10
+        assert mcp.tool.call_count == 11
         registered = [call.args[0] for call in mcp.tool.call_args_list]
         assert permissions.list_users in registered
         assert permissions.list_groups in registered
@@ -482,6 +484,7 @@ class TestRegister:
         assert permissions.list_permissions in registered
         assert permissions.list_default_permissions in registered
         assert permissions.set_default_permissions in registered
+        assert permissions.effective_permissions in registered
 
 
 # ==============================================================================
@@ -1557,3 +1560,679 @@ class TestSetDefaultPermissions:
 
         assert isinstance(result, DefaultPermissionsResult)
         assert result.for_content_type == "virtual_connection"
+
+
+# ==============================================================================
+# effective_permissions
+# ==============================================================================
+
+
+class TestEffectivePermissions:
+    """Testes para a ferramenta `effective_permissions` (Phase 2, ADR-002)."""
+
+    # --- Fixtures auxiliares ---
+
+    @staticmethod
+    def _make_rule(
+        grantee_type: str,
+        grantee_id: str,
+        capabilities: dict[str, str],
+    ) -> MagicMock:
+        """Cria mock de TSC.PermissionsRule para effective_permissions."""
+        rule = MagicMock()
+        if grantee_type == "group":
+            grantee = TSC.GroupItem()
+            grantee._id = grantee_id
+        else:
+            grantee = TSC.UserItem()
+            grantee._id = grantee_id
+        rule.grantee = grantee
+        rule.capabilities = capabilities
+        return rule
+
+    # --- User-level rules ---
+
+    def test_user_explicit_allow_returns_allow_user_rule(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Regra explícita Allow no usuário → Allow, reason 'user_rule'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        rule = self._make_rule("user", "u-1", {"Read": "Allow", "Write": "Allow"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_read = next(c for c in result.capabilities if c.name == "Read")
+        assert cap_read.mode == "Allow"
+        assert cap_read.reason == "user_rule"
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        assert cap_write.mode == "Allow"
+        assert cap_write.reason == "user_rule"
+
+    def test_user_explicit_deny_returns_deny_user_rule(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Regra explícita Deny no usuário → Deny, reason 'user_rule'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        rule = self._make_rule("user", "u-1", {"Write": "Deny"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        assert cap_write.mode == "Deny"
+        assert cap_write.reason == "user_rule"
+
+    # --- Group-level rules ---
+
+    def test_group_allow_no_user_rule_returns_allow_group_rule(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Usuário em grupo com Allow, sem regra de usuário → Allow 'group_rule'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        group_rule = self._make_rule("group", "g-1", {"Read": "Allow"})
+        client.get_permissions.return_value = [group_rule]
+        # User is member of group g-1
+        client.list_group_members.return_value = [("u-1", "alice", "Creator")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_read = next(c for c in result.capabilities if c.name == "Read")
+        assert cap_read.mode == "Allow"
+        assert cap_read.reason == "group_rule"
+
+    def test_two_groups_one_allow_one_deny_returns_deny_group_rule(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Usuário em 2 grupos: Allow + Deny → Deny (Deny-wins), reason 'group_rule'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        group_allow = self._make_rule("group", "g-1", {"Write": "Allow"})
+        group_deny = self._make_rule("group", "g-2", {"Write": "Deny"})
+        client.get_permissions.return_value = [group_allow, group_deny]
+        # User is member of both groups
+        client.list_group_members.return_value = [("u-1", "alice", "Creator")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        assert cap_write.mode == "Deny"
+        assert cap_write.reason == "group_rule"
+
+    def test_user_not_in_group_ignores_group_rule(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Grupo com Allow mas usuário não é membro → capability não concedida."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        group_rule = self._make_rule("group", "g-1", {"Read": "Allow"})
+        client.get_permissions.return_value = [group_rule]
+        # User is NOT member of the group
+        client.list_group_members.return_value = [("u-other", "bob", "Viewer")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_read = next(c for c in result.capabilities if c.name == "Read")
+        assert cap_read.mode == "Deny"
+        assert cap_read.reason == "not_granted"
+
+    # --- Site-role ceiling ---
+
+    def test_group_allow_capped_by_site_role_returns_deny_site_role_cap(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Grupo Allow, site-role Viewer não suporta → Deny, 'site_role_cap'."""
+        client.resolve_user.return_value = ("u-1", "Viewer")
+        group_rule = self._make_rule("group", "g-1", {"Write": "Allow"})
+        client.get_permissions.return_value = [group_rule]
+        client.list_group_members.return_value = [("u-1", "alice", "Viewer")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        assert cap_write.mode == "Deny"
+        assert cap_write.reason == "site_role_cap"
+
+    def test_viewer_caps_write_delete_export_xml(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Viewer não pode ter Write, Delete, ExportXml (capped by site role)."""
+        client.resolve_user.return_value = ("u-1", "Viewer")
+        rule = self._make_rule(
+            "user",
+            "u-1",
+            {
+                "Write": "Allow",
+                "Delete": "Allow",
+                "ExportXml": "Allow",
+                "Read": "Allow",
+            },
+        )
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        cap_delete = next(c for c in result.capabilities if c.name == "Delete")
+        cap_xml = next(c for c in result.capabilities if c.name == "ExportXml")
+        cap_read = next(c for c in result.capabilities if c.name == "Read")
+
+        assert cap_write.mode == "Deny"
+        assert cap_write.reason == "site_role_cap"
+        assert cap_delete.mode == "Deny"
+        assert cap_delete.reason == "site_role_cap"
+        assert cap_xml.mode == "Deny"
+        assert cap_xml.reason == "site_role_cap"
+        # Read is allowed for Viewer
+        assert cap_read.mode == "Allow"
+        assert cap_read.reason == "user_rule"
+
+    # --- Ownership override ---
+
+    def test_content_owner_gets_all_allow_with_ownership_reason(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Content owner → todas capabilities Allow, reason 'ownership'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        client.get_permissions.return_value = []
+        # Mock item owner_id
+        mock_item = MagicMock()
+        mock_item.owner_id = "u-1"
+        mock_item.name = "Test Workbook"
+        mock_dispatch = {
+            PermContentType.workbook: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.datasource: (
+                MagicMock(),
+                MagicMock(return_value=mock_item),
+            ),
+            PermContentType.project: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.view: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.flow: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.virtual_connection: (
+                MagicMock(),
+                MagicMock(return_value=mock_item),
+            ),
+        }
+        type(client)._perm_dispatch = PropertyMock(return_value=mock_dispatch)
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.is_owner is True
+        assert result.is_admin is False
+        for cap in result.capabilities:
+            assert cap.mode == "Allow"
+            assert cap.reason == "ownership"
+
+    # --- Admin bypass ---
+
+    def test_server_admin_gets_all_allow_with_admin_reason(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """ServerAdministrator → todas Allow, is_admin=True, reason 'admin'."""
+        client.resolve_user.return_value = ("u-1", "ServerAdministrator")
+        client.get_permissions.return_value = []
+
+        result = permissions.effective_permissions("workbook", "wb-1", "admin_user")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.is_admin is True
+        assert result.site_role == "ServerAdministrator"
+        for cap in result.capabilities:
+            assert cap.mode == "Allow"
+            assert cap.reason == "admin"
+
+    def test_site_admin_creator_gets_admin_bypass(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """SiteAdministratorCreator → admin bypass."""
+        client.resolve_user.return_value = ("u-1", "SiteAdministratorCreator")
+        client.get_permissions.return_value = []
+
+        result = permissions.effective_permissions("workbook", "wb-1", "site_admin")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.is_admin is True
+        for cap in result.capabilities:
+            assert cap.mode == "Allow"
+            assert cap.reason == "admin"
+
+    def test_site_admin_explorer_gets_admin_bypass(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """SiteAdministratorExplorer → admin bypass."""
+        client.resolve_user.return_value = ("u-1", "SiteAdministratorExplorer")
+        client.get_permissions.return_value = []
+
+        result = permissions.effective_permissions("workbook", "wb-1", "site_admin")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.is_admin is True
+
+    # --- not_granted ---
+
+    def test_no_rules_anywhere_returns_deny_not_granted(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Nenhuma regra para o usuário ou seus grupos → Deny, 'not_granted'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        client.get_permissions.return_value = []
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        # All capabilities should be Deny/not_granted
+        for cap in result.capabilities:
+            assert cap.mode == "Deny"
+            assert cap.reason == "not_granted"
+
+    # --- Error cases ---
+
+    def test_nonexistent_user_returns_tool_error_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Usuário inexistente → ToolError(NOT_FOUND)."""
+        client.resolve_user.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Usuário 'ghost' não encontrado."
+        )
+
+        result = permissions.effective_permissions("workbook", "wb-1", "ghost")
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+        assert "ghost" in result.error.message
+
+    def test_nonexistent_content_returns_tool_error_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Conteúdo inexistente → ToolError(NOT_FOUND)."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        client.get_permissions.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Workbook 'wb-999' não encontrado."
+        )
+
+        result = permissions.effective_permissions("workbook", "wb-999", "alice")
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+        assert "wb-999" in result.error.message
+
+    def test_invalid_content_type_returns_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """content_type inválido → ToolError(VALIDATION_ERROR)."""
+        result = permissions.effective_permissions("invalid_type", "x", "alice")
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+
+    # --- Summary ---
+
+    def test_summary_includes_capability_names_for_partial_access(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Summary inclui nomes de capabilities para acesso parcial."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        rule = self._make_rule("user", "u-1", {"Read": "Allow", "Filter": "Allow"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert "Read" in result.summary
+        assert "Filter" in result.summary
+        assert "Creator" in result.summary
+
+    def test_summary_admin_bypass_message(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Summary para admin indica bypass total."""
+        client.resolve_user.return_value = ("u-1", "ServerAdministrator")
+        client.get_permissions.return_value = []
+
+        result = permissions.effective_permissions("workbook", "wb-1", "admin_user")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert "admin" in result.summary.lower()
+        assert "ServerAdministrator" in result.summary
+
+    def test_summary_owner_message(self, client: MagicMock, session: MagicMock) -> None:
+        """Summary para owner indica propriedade."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        client.get_permissions.return_value = []
+        mock_item = MagicMock()
+        mock_item.owner_id = "u-1"
+        mock_item.name = "Test Workbook"
+        mock_dispatch = {
+            PermContentType.workbook: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.datasource: (
+                MagicMock(),
+                MagicMock(return_value=mock_item),
+            ),
+            PermContentType.project: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.view: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.flow: (MagicMock(), MagicMock(return_value=mock_item)),
+            PermContentType.virtual_connection: (
+                MagicMock(),
+                MagicMock(return_value=mock_item),
+            ),
+        }
+        type(client)._perm_dispatch = PropertyMock(return_value=mock_dispatch)
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert (
+            "proprietário" in result.summary.lower()
+            or "owner" in result.summary.lower()
+        )
+
+    # --- SITE_ROLE_CAPS constant ---
+
+    def test_site_role_caps_covers_all_known_roles(self) -> None:
+        """SITE_ROLE_CAPS deve cobrir todos os roles não-admin conhecidos."""
+        expected_roles = {
+            "Creator",
+            "Explorer (Can Publish)",
+            "ExplorerCanPublish",
+            "Explorer",
+            "Viewer",
+            "Unlicensed",
+            "ReadOnly",
+        }
+        assert set(permissions.SITE_ROLE_CAPS.keys()) == expected_roles
+
+    def test_site_role_caps_creator_is_superset_of_explorer(self) -> None:
+        """Creator deve ter todas as capabilities do Explorer."""
+        creator_caps = permissions.SITE_ROLE_CAPS["Creator"]
+        explorer_caps = permissions.SITE_ROLE_CAPS["Explorer"]
+        assert explorer_caps.issubset(creator_caps)
+
+    def test_site_role_caps_explorer_is_superset_of_viewer(self) -> None:
+        """Explorer deve ter todas as capabilities do Viewer."""
+        explorer_caps = permissions.SITE_ROLE_CAPS["Explorer"]
+        viewer_caps = permissions.SITE_ROLE_CAPS["Viewer"]
+        assert viewer_caps.issubset(explorer_caps)
+
+    def test_site_role_caps_unlicensed_is_empty(self) -> None:
+        """Unlicensed não tem nenhuma capability."""
+        assert permissions.SITE_ROLE_CAPS["Unlicensed"] == frozenset()
+
+    # --- Result structure ---
+
+    def test_result_structure_fields(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Resultado tem todos os campos obrigatórios corretamente preenchidos."""
+        client.resolve_user.return_value = ("u-42", "Explorer")
+        rule = self._make_rule("user", "u-42", {"Read": "Allow"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("datasource", "ds-1", "bob")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.status == "success"
+        assert result.content_type == "datasource"
+        assert result.content_id == "ds-1"
+        assert result.user_id == "u-42"
+        assert result.user_name == "bob"
+        assert result.site_role == "Explorer"
+        assert result.is_owner is False
+        assert result.is_admin is False
+        assert isinstance(result.capabilities, list)
+        assert len(result.capabilities) > 0
+        assert isinstance(result.summary, str)
+        assert len(result.summary) > 0
+
+    # --- User rule precedence over group rule ---
+
+    def test_user_allow_overrides_group_deny(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Regra de usuário Allow tem precedência sobre regra de grupo Deny."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        user_rule = self._make_rule("user", "u-1", {"Write": "Allow"})
+        group_rule = self._make_rule("group", "g-1", {"Write": "Deny"})
+        client.get_permissions.return_value = [user_rule, group_rule]
+        client.list_group_members.return_value = [("u-1", "alice", "Creator")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_write = next(c for c in result.capabilities if c.name == "Write")
+        assert cap_write.mode == "Allow"
+        assert cap_write.reason == "user_rule"
+
+    def test_user_deny_overrides_group_allow(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Regra de usuário Deny tem precedência sobre regra de grupo Allow."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        user_rule = self._make_rule("user", "u-1", {"Read": "Deny"})
+        group_rule = self._make_rule("group", "g-1", {"Read": "Allow"})
+        client.get_permissions.return_value = [user_rule, group_rule]
+        client.list_group_members.return_value = [("u-1", "alice", "Creator")]
+
+        result = permissions.effective_permissions("workbook", "wb-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        cap_read = next(c for c in result.capabilities if c.name == "Read")
+        assert cap_read.mode == "Deny"
+        assert cap_read.reason == "user_rule"
+
+    # --- Multiple content types ---
+
+    def test_works_with_project_content_type(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """effective_permissions funciona com content_type='project'."""
+        client.resolve_user.return_value = ("u-1", "Creator")
+        rule = self._make_rule("user", "u-1", {"View": "Allow"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("project", "proj-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.content_type == "project"
+
+    def test_works_with_view_content_type(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """effective_permissions funciona com content_type='view'."""
+        client.resolve_user.return_value = ("u-1", "Viewer")
+        rule = self._make_rule("user", "u-1", {"Read": "Allow", "Filter": "Allow"})
+        client.get_permissions.return_value = [rule]
+
+        result = permissions.effective_permissions("view", "v-1", "alice")
+
+        assert isinstance(result, EffectivePermissionsResult)
+        assert result.content_type == "view"
+
+
+class TestComputeEffectiveCapabilities:
+    """Testes para a função pura `_compute_effective_capabilities`."""
+
+    @staticmethod
+    def _make_rule(
+        grantee_type: str,
+        grantee_id: str,
+        capabilities: dict[str, str],
+    ) -> MagicMock:
+        """Cria mock de TSC.PermissionsRule."""
+        rule = MagicMock()
+        if grantee_type == "group":
+            grantee = TSC.GroupItem()
+            grantee._id = grantee_id
+        else:
+            grantee = TSC.UserItem()
+            grantee._id = grantee_id
+        rule.grantee = grantee
+        rule.capabilities = capabilities
+        return rule
+
+    def test_empty_rules_all_not_granted(self) -> None:
+        """Sem regras → tudo Deny com reason 'not_granted'."""
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="Creator",
+            is_owner=False,
+            is_admin=False,
+            rules=[],
+            user_group_ids=set(),
+        )
+
+        for cap in result:
+            assert cap.mode == "Deny"
+            assert cap.reason == "not_granted"
+
+    def test_admin_overrides_everything(self) -> None:
+        """Admin → todas Allow com 'admin' independente de regras."""
+        deny_rule = self._make_rule("user", "u-1", {"Read": "Deny"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="ServerAdministrator",
+            is_owner=False,
+            is_admin=True,
+            rules=[deny_rule],
+            user_group_ids=set(),
+        )
+
+        for cap in result:
+            assert cap.mode == "Allow"
+            assert cap.reason == "admin"
+
+    def test_owner_overrides_deny_rules(self) -> None:
+        """Owner → todas Allow com 'ownership' independente de regras Deny."""
+        deny_rule = self._make_rule("user", "u-1", {"Read": "Deny", "Write": "Deny"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="Creator",
+            is_owner=True,
+            is_admin=False,
+            rules=[deny_rule],
+            user_group_ids=set(),
+        )
+
+        for cap in result:
+            assert cap.mode == "Allow"
+            assert cap.reason == "ownership"
+
+    def test_unknown_site_role_no_ceiling_applied(self) -> None:
+        """Site role desconhecido → sem teto aplicado (não bloqueia)."""
+        rule = self._make_rule("user", "u-1", {"Write": "Allow", "Delete": "Allow"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="CustomUnknownRole",
+            is_owner=False,
+            is_admin=False,
+            rules=[rule],
+            user_group_ids=set(),
+        )
+
+        cap_write = next(c for c in result if c.name == "Write")
+        cap_delete = next(c for c in result if c.name == "Delete")
+        assert cap_write.mode == "Allow"
+        assert cap_write.reason == "user_rule"
+        assert cap_delete.mode == "Allow"
+        assert cap_delete.reason == "user_rule"
+
+    def test_multiple_groups_allow_no_deny(self) -> None:
+        """Múltiplos grupos com Allow e sem Deny → Allow com 'group_rule'."""
+        g1_rule = self._make_rule("group", "g-1", {"Read": "Allow"})
+        g2_rule = self._make_rule("group", "g-2", {"Read": "Allow"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="Creator",
+            is_owner=False,
+            is_admin=False,
+            rules=[g1_rule, g2_rule],
+            user_group_ids={"g-1", "g-2"},
+        )
+
+        cap_read = next(c for c in result if c.name == "Read")
+        assert cap_read.mode == "Allow"
+        assert cap_read.reason == "group_rule"
+
+    def test_site_role_cap_caps_user_allow(self) -> None:
+        """Teto do site role restringe Allow do usuário → Deny com 'site_role_cap'."""
+        rule = self._make_rule("user", "u-1", {"Write": "Allow"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="Viewer",
+            is_owner=False,
+            is_admin=False,
+            rules=[rule],
+            user_group_ids=set(),
+        )
+
+        cap_write = next(c for c in result if c.name == "Write")
+        assert cap_write.mode == "Deny"
+        assert cap_write.reason == "site_role_cap"
+
+    def test_unlicensed_caps_all_capabilities(self) -> None:
+        """Unlicensed → todo Allow vira Deny com 'site_role_cap'."""
+        rule = self._make_rule("user", "u-1", {"Read": "Allow", "View": "Allow"})
+        result = permissions._compute_effective_capabilities(
+            user_id="u-1",
+            site_role="Unlicensed",
+            is_owner=False,
+            is_admin=False,
+            rules=[rule],
+            user_group_ids=set(),
+        )
+
+        cap_read = next(c for c in result if c.name == "Read")
+        cap_view = next(c for c in result if c.name == "View")
+        assert cap_read.mode == "Deny"
+        assert cap_read.reason == "site_role_cap"
+        assert cap_view.mode == "Deny"
+        assert cap_view.reason == "site_role_cap"
+
+
+class TestBuildSummary:
+    """Testes para a função `_build_summary`."""
+
+    def test_admin_summary(self) -> None:
+        """Admin summary contém referência a admin e site role."""
+        caps = [EffectiveCapability(name="Read", mode="Allow", reason="admin")]
+        summary = permissions._build_summary(
+            caps, is_admin=True, is_owner=False, site_role="ServerAdministrator"
+        )
+        assert "admin" in summary.lower()
+        assert "ServerAdministrator" in summary
+
+    def test_owner_summary(self) -> None:
+        """Owner summary contém referência a proprietário."""
+        caps = [EffectiveCapability(name="Read", mode="Allow", reason="ownership")]
+        summary = permissions._build_summary(
+            caps, is_admin=False, is_owner=True, site_role="Creator"
+        )
+        assert "proprietário" in summary.lower() or "owner" in summary.lower()
+        assert "Creator" in summary
+
+    def test_no_access_summary(self) -> None:
+        """Sem acesso gera summary indicando sem acesso."""
+        caps = [EffectiveCapability(name="Read", mode="Deny", reason="not_granted")]
+        summary = permissions._build_summary(
+            caps, is_admin=False, is_owner=False, site_role="Viewer"
+        )
+        assert "sem acesso" in summary.lower() or "no access" in summary.lower()
+
+    def test_partial_access_summary_includes_allowed_caps(self) -> None:
+        """Acesso parcial inclui nomes das capabilities permitidas."""
+        caps = [
+            EffectiveCapability(name="Read", mode="Allow", reason="user_rule"),
+            EffectiveCapability(name="Filter", mode="Allow", reason="user_rule"),
+            EffectiveCapability(name="Write", mode="Deny", reason="site_role_cap"),
+        ]
+        summary = permissions._build_summary(
+            caps, is_admin=False, is_owner=False, site_role="Viewer"
+        )
+        assert "Read" in summary
+        assert "Filter" in summary
+        assert "Viewer" in summary

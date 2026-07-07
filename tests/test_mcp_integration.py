@@ -81,10 +81,11 @@ _PERMISSIONS_TOOLS = frozenset(
         "list_permissions",
         "set_default_permissions",
         "list_default_permissions",
+        "effective_permissions",
     }
 )
 
-# Conjunto completo esperado no servidor: 10 base + 7 Hyper + 10 Permissions = 27 tools.
+# Conjunto completo esperado no servidor: 10 base + 7 Hyper + 11 Permissions = 28 tools.
 _EXPECTED_TOOLS = _BASE_TOOLS | _HYPER_TOOLS | _PERMISSIONS_TOOLS
 
 
@@ -418,7 +419,7 @@ def test_servidor_expoe_vinte_e_sete_tools(mcp_server: server.FastMCP) -> None:
 
     discovered = _await(scenario())
 
-    assert len(discovered) == 27
+    assert len(discovered) == 28
     assert discovered == set(_EXPECTED_TOOLS)
     # As sete tools de Hyper Datasources estão entre as descobertas.
     assert _HYPER_TOOLS <= discovered
@@ -565,7 +566,7 @@ def test_run_registra_ferramentas_e_inicia_stdio(
 
 
 def test_mcp_cap6_todas_dez_tools_registradas(mcp_server: server.FastMCP) -> None:
-    """Verifica que todas as 10 ferramentas de permissões estão registradas."""
+    """Verifica que todas as 11 ferramentas de permissões estão registradas."""
 
     async def scenario() -> set[str]:
         async with Client(mcp_server) as client:
@@ -575,7 +576,7 @@ def test_mcp_cap6_todas_dez_tools_registradas(mcp_server: server.FastMCP) -> Non
     discovered = _await(scenario())
 
     assert _PERMISSIONS_TOOLS <= discovered
-    assert len(_PERMISSIONS_TOOLS) == 10
+    assert len(_PERMISSIONS_TOOLS) == 11
 
 
 @pytest.mark.parametrize(
