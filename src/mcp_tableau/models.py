@@ -108,6 +108,28 @@ class RenderImageResult(BaseModel):
     mime_type: str = "image/png"
     applied_filters: dict[str, str] = Field(default_factory=dict)
     diagnostic: VisualDiagnostic
+    # File-save metadata (populated when output_path is provided)
+    output_path: str | None = None
+    file_size_bytes: int | None = None
+    save_error: str | None = None
+
+
+class RenderPdfResult(BaseModel):
+    """Resultado da renderização PDF de uma view.
+
+    Quando `output_path` é fornecido, o PDF é salvo no disco e os campos de
+    metadados de arquivo são preenchidos. A imagem inline acompanha como bloco
+    File MCP quando `include_content=True`.
+    """
+
+    status: Literal["success"] = "success"
+    view_id: str
+    page_type: str
+    mime_type: str = "application/pdf"
+    # File-save metadata (populated when output_path is provided)
+    output_path: str | None = None
+    file_size_bytes: int | None = None
+    save_error: str | None = None
 
 
 # Capacidade 3 — QA estrutural --------------------------------------------------

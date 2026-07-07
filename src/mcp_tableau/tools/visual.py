@@ -15,12 +15,16 @@ confirmação multimodal. O acesso ao Tableau acontece exclusivamente via
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastmcp import FastMCP
 from fastmcp.utilities.types import File, Image
 
 from mcp_tableau.config import load_settings
-from mcp_tableau.models import ErrorCode, RenderImageResult, ToolError
+from mcp_tableau.models import ErrorCode, RenderImageResult, RenderPdfResult, ToolError
 from mcp_tableau.tableau.client import TableauClientError, tableau_session
+from mcp_tableau.tools._file_writer import atomic_write_bytes
+from mcp_tableau.tools._validation import require_output_destination
 from mcp_tableau.validation.visual import BlankRenderError, detect_blank_render
 
 
@@ -28,7 +32,10 @@ def render_view_image(
     view_id: str,
     filters: dict[str, str] | None = None,
     high_res: bool = True,
-) -> tuple[RenderImageResult, Image] | ToolError:
+    output_path: str | None = None,
+    include_content: bool = True,
+    overwrite: bool = True,
+) -> tuple[RenderImageResult, Image] | RenderImageResult | ToolError:
     """Renderiza o PNG de uma view e devolve diagnóstico + bloco de imagem MCP.
 
     Renderiza a view identificada por `view_id`, aplicando os `filters` como
@@ -38,20 +45,50 @@ def render_view_image(
     (`diagnostic.severity == "error"`) **não** falha a ferramenta — a imagem é
     sempre devolvida para confirmação visual pelo agente.
 
+    Quando `output_path` é fornecido, salva o PNG no caminho indicado usando
+    escrita atômica. Se `include_content=False` (e `output_path` está definido),
+    retorna apenas o `RenderImageResult` sem o bloco de imagem inline.
+
     Args:
         view_id: LUID da view a renderizar.
         filters: Pares campo→valor aplicados como `vf_` na renderização. Ausente
             ou `null` significa nenhum filtro.
         high_res: Quando `true`, solicita alta resolução ao Tableau.
+        output_path: Caminho absoluto para salvar o PNG renderizado. Quando
+            ausente/`null`, nenhum arquivo é gravado.
+        include_content: Quando `true`, retorna o bloco de imagem MCP inline.
+            Ignorado quando `output_path` não é fornecido (sempre retorna imagem).
+        overwrite: Quando `true`, sobrescreve arquivo existente no `output_path`.
+            Se `false` e o arquivo existir, retorna `ToolError(VALIDATION_ERROR)`
+            sem chamar o Tableau.
 
     Returns:
-        Tupla `(RenderImageResult, Image)` em caso de sucesso, ou `ToolError` com
-        código acionável: `NOT_FOUND` (view inexistente), `RENDER_FAILED` (bytes
-        de render inválidos/ilegíveis) ou demais códigos repassados do upstream
-        (`AUTH_FAILED`, `PERMISSION_DENIED`, `UPSTREAM_ERROR`).
+        Tupla `(RenderImageResult, Image)` em caso de sucesso sem `output_path`,
+        ou com `output_path` e `include_content=True`. Bare `RenderImageResult`
+        quando `output_path` definido, `include_content=False` **e a gravação teve
+        sucesso**; se a gravação falhar (`save_error` preenchido) a imagem inline é
+        sempre devolvida para o agente não ficar sem conteúdo. `ToolError` com
+        código acionável em caso de falha.
     """
     applied_filters = dict(filters) if filters else {}
 
+    # --- Fail-fast overwrite check (before render) ---
+    resolved_path: Path | None = None
+    validation_error: ToolError | None = None
+
+    if output_path is not None:
+        resolved_path = Path(output_path).resolve()
+
+        if not overwrite and resolved_path.exists():
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"Já existe arquivo em '{resolved_path}' e overwrite=false.",
+            )
+
+        # Validate extension and parent directory
+        validation_error = require_output_destination(resolved_path, {".png"})
+
+    # --- Tableau render ---
     try:
         with tableau_session(load_settings()) as client:
             png = client.render_view_image(view_id, applied_filters, high_res)
@@ -61,11 +98,36 @@ def render_view_image(
     except BlankRenderError as exc:
         return ToolError.of(ErrorCode.RENDER_FAILED, str(exc))
 
+    # --- File write (only if path valid) ---
+    save_error: str | None = None
+    file_size_bytes: int | None = None
+    written_path: str | None = None
+
+    if resolved_path is not None:
+        if validation_error is not None:
+            save_error = validation_error.error.message
+        else:
+            try:
+                file_size_bytes = atomic_write_bytes(resolved_path, png)
+                written_path = str(resolved_path)
+            except OSError as exc:
+                save_error = str(exc)
+
+    # --- Build result model ---
     result = RenderImageResult(
         view_id=view_id,
         applied_filters=applied_filters,
         diagnostic=diagnostic,
+        output_path=written_path,
+        file_size_bytes=file_size_bytes,
+        save_error=save_error,
     )
+
+    # --- Conditional return ---
+    # A failed save (save_error set) always falls through to the tuple return so
+    # the agent still gets the rendered bytes inline — never left empty-handed.
+    if output_path is not None and not include_content and save_error is None:
+        return result
     return result, Image(data=png, format="png")
 
 
@@ -73,28 +135,61 @@ def render_workbook_pdf(
     view_id: str,
     filters: dict[str, str] | None = None,
     page_type: str = "A4",
-) -> tuple[dict[str, str], File] | ToolError:
+    output_path: str | None = None,
+    include_content: bool = True,
+    overwrite: bool = True,
+) -> tuple[RenderPdfResult, File] | RenderPdfResult | ToolError:
     """Renderiza o PDF de uma view e devolve status + bloco de arquivo PDF.
 
     Renderiza a view identificada por `view_id` como PDF no formato de página
     `page_type` (padrão `A4`), aplicando os `filters` como parâmetros `vf_`.
-    Devolve um status simples (`{"status": "success", "view_id", "page_type"}`)
-    acompanhado do bloco de arquivo PDF (`application/pdf`) para consumo pelo
-    agente.
+    Devolve um `RenderPdfResult` (JSON estruturado) acompanhado do bloco de
+    arquivo PDF (`application/pdf`) para consumo pelo agente.
+
+    Quando `output_path` é fornecido, salva o PDF no caminho indicado usando
+    escrita atômica. Se `include_content=False` (e `output_path` está definido),
+    retorna apenas o `RenderPdfResult` sem o bloco de arquivo inline.
 
     Args:
         view_id: LUID da view a renderizar.
         filters: Pares campo→valor aplicados como `vf_` na renderização. Ausente
             ou `null` significa nenhum filtro.
         page_type: Formato de página do PDF (ex.: `A4`, `Letter`, `Tabloid`).
+        output_path: Caminho absoluto para salvar o PDF renderizado. Quando
+            ausente/`null`, nenhum arquivo é gravado.
+        include_content: Quando `true`, retorna o bloco de arquivo MCP inline.
+            Ignorado quando `output_path` não é fornecido (sempre retorna arquivo).
+        overwrite: Quando `true`, sobrescreve arquivo existente no `output_path`.
+            Se `false` e o arquivo existir, retorna `ToolError(VALIDATION_ERROR)`
+            sem chamar o Tableau.
 
     Returns:
-        Tupla `(status, File)` em caso de sucesso, ou `ToolError` com código
-        acionável: `NOT_FOUND` (view inexistente), `RENDER_FAILED` ou demais
-        códigos repassados do upstream.
+        Tupla `(RenderPdfResult, File)` em caso de sucesso sem `output_path`,
+        ou com `output_path` e `include_content=True`. Bare `RenderPdfResult`
+        quando `output_path` definido, `include_content=False` **e a gravação teve
+        sucesso**; se a gravação falhar (`save_error` preenchido) o arquivo inline é
+        sempre devolvido para o agente não ficar sem conteúdo. `ToolError` com
+        código acionável em caso de falha.
     """
     applied_filters = dict(filters) if filters else {}
 
+    # --- Fail-fast overwrite check (before render) ---
+    resolved_path: Path | None = None
+    validation_error: ToolError | None = None
+
+    if output_path is not None:
+        resolved_path = Path(output_path).resolve()
+
+        if not overwrite and resolved_path.exists():
+            return ToolError.of(
+                ErrorCode.VALIDATION_ERROR,
+                f"Já existe arquivo em '{resolved_path}' e overwrite=false.",
+            )
+
+        # Validate extension and parent directory
+        validation_error = require_output_destination(resolved_path, {".pdf"})
+
+    # --- Tableau render ---
     try:
         with tableau_session(load_settings()) as client:
             pdf = client.render_view_pdf(view_id, page_type, applied_filters)
@@ -107,8 +202,36 @@ def render_workbook_pdf(
             "Render do PDF retornou vazio; nenhum conteúdo a devolver.",
         )
 
-    status = {"status": "success", "view_id": view_id, "page_type": page_type}
-    return status, File(data=pdf, format="pdf", name=view_id)
+    # --- File write (only if path valid) ---
+    save_error: str | None = None
+    file_size_bytes: int | None = None
+    written_path: str | None = None
+
+    if resolved_path is not None:
+        if validation_error is not None:
+            save_error = validation_error.error.message
+        else:
+            try:
+                file_size_bytes = atomic_write_bytes(resolved_path, pdf)
+                written_path = str(resolved_path)
+            except OSError as exc:
+                save_error = str(exc)
+
+    # --- Build result model ---
+    result = RenderPdfResult(
+        view_id=view_id,
+        page_type=page_type,
+        output_path=written_path,
+        file_size_bytes=file_size_bytes,
+        save_error=save_error,
+    )
+
+    # --- Conditional return ---
+    # A failed save (save_error set) always falls through to the tuple return so
+    # the agent still gets the rendered bytes inline — never left empty-handed.
+    if output_path is not None and not include_content and save_error is None:
+        return result
+    return result, File(data=pdf, format="pdf", name=view_id)
 
 
 def register(mcp: FastMCP) -> None:

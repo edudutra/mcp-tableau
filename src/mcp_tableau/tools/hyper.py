@@ -42,6 +42,7 @@ from mcp_tableau.models import (
     ToolError,
     VolumeAlert,
 )
+from mcp_tableau.tools._validation import require_output_destination
 from mcp_tableau.validation.volume import (
     check_extracted_rows,
     check_inline_rows,
@@ -570,20 +571,9 @@ def _first_keyword(sql: str) -> str:
 def _require_hyper_destination(path: Path) -> ToolError | None:
     """Valida o destino `.hyper`: extensão correta e diretório-pai existente.
 
-    Não exige que o arquivo já exista (ele é criado/sobrescrito). Destino
-    inválido é erro de parâmetro (`VALIDATION_ERROR`), não de arquivo Hyper.
+    Thin wrapper over the shared `require_output_destination` helper (ADR-003).
     """
-    if path.suffix.lower() != _HYPER_SUFFIX:
-        return ToolError.of(
-            ErrorCode.VALIDATION_ERROR,
-            f"O destino '{path}' deve ter extensão .hyper.",
-        )
-    if not path.parent.is_dir():
-        return ToolError.of(
-            ErrorCode.VALIDATION_ERROR,
-            f"O diretório de destino '{path.parent}' não existe.",
-        )
-    return None
+    return require_output_destination(path, {_HYPER_SUFFIX})
 
 
 def _resolve_source_format(path: Path, source_format: str) -> str | None:

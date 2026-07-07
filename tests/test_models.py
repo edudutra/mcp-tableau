@@ -26,12 +26,12 @@ from mcp_tableau.models import (
     PermContentType,
     PermissionsResult,
     PublishResult,
-    ResolveResult,
+    RenderImageResult,
+    RenderPdfResult,
     SheetRef,
     StructureReport,
     ToolError,
-    UserInfo,
-    UserListResult,
+    VisualDiagnostic,
     VolumeAlert,
 )
 
@@ -260,6 +260,176 @@ def test_hyper_table_info_row_count_nulo_permitido() -> None:
     assert dump["row_count"] is None
 
 
+# Capacidade 2 — Visual (file-save metadata) ------------------------------------
+
+
+def _make_diagnostic() -> VisualDiagnostic:
+    """Helper: cria VisualDiagnostic padrão para testes de RenderImageResult."""
+    return VisualDiagnostic(
+        is_likely_blank=False,
+        blank_ratio=0.02,
+        severity="ok",
+        message="Imagem ok.",
+    )
+
+
+class TestRenderImageResultFileSaveFields:
+    """Testes dos novos campos opcionais de file-save em RenderImageResult."""
+
+    def test_backward_compat_sem_novos_campos(self) -> None:
+        """Instanciação sem novos campos funciona (backward compat)."""
+        result = RenderImageResult(
+            view_id="abc-123",
+            diagnostic=_make_diagnostic(),
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["status"] == "success"
+        assert dump["view_id"] == "abc-123"
+        assert dump["output_path"] is None
+        assert dump["file_size_bytes"] is None
+        assert dump["save_error"] is None
+
+    def test_com_file_metadata_preenchida(self) -> None:
+        """Instanciação com todos os campos de file-save populados."""
+        result = RenderImageResult(
+            view_id="view-42",
+            diagnostic=_make_diagnostic(),
+            output_path="/tmp/render.png",
+            file_size_bytes=204800,
+            save_error=None,
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["output_path"] == "/tmp/render.png"
+        assert dump["file_size_bytes"] == 204800
+        assert dump["save_error"] is None
+
+    def test_com_save_error(self) -> None:
+        """save_error é preenchido quando o save falha."""
+        result = RenderImageResult(
+            view_id="view-42",
+            diagnostic=_make_diagnostic(),
+            output_path=None,
+            file_size_bytes=None,
+            save_error="Permission denied: /root/out.png",
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["save_error"] == "Permission denied: /root/out.png"
+        assert dump["output_path"] is None
+        assert dump["file_size_bytes"] is None
+
+    def test_serializacao_inclui_campos_none(self) -> None:
+        """Campos None aparecem como null na serialização (não omitidos)."""
+        result = RenderImageResult(
+            view_id="v1",
+            diagnostic=_make_diagnostic(),
+        )
+
+        dump = result.model_dump(mode="json")
+
+        # Campos estão presentes no dict (não omitidos), com valor null.
+        assert "output_path" in dump
+        assert "file_size_bytes" in dump
+        assert "save_error" in dump
+
+
+class TestRenderPdfResult:
+    """Testes do novo modelo RenderPdfResult."""
+
+    def test_instanciacao_campos_obrigatorios_somente(self) -> None:
+        """Instanciação com apenas campos obrigatórios (defaults aplicados)."""
+        result = RenderPdfResult(
+            view_id="pdf-view-1",
+            page_type="A4",
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["status"] == "success"
+        assert dump["view_id"] == "pdf-view-1"
+        assert dump["page_type"] == "A4"
+        assert dump["mime_type"] == "application/pdf"
+        assert dump["output_path"] is None
+        assert dump["file_size_bytes"] is None
+        assert dump["save_error"] is None
+
+    def test_instanciacao_com_todos_os_campos(self) -> None:
+        """Instanciação com todos os campos populados."""
+        result = RenderPdfResult(
+            view_id="pdf-view-2",
+            page_type="Letter",
+            mime_type="application/pdf",
+            output_path="/data/reports/q2.pdf",
+            file_size_bytes=1048576,
+            save_error=None,
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["view_id"] == "pdf-view-2"
+        assert dump["page_type"] == "Letter"
+        assert dump["mime_type"] == "application/pdf"
+        assert dump["output_path"] == "/data/reports/q2.pdf"
+        assert dump["file_size_bytes"] == 1048576
+        assert dump["save_error"] is None
+
+    def test_serializacao_estrutura_esperada(self) -> None:
+        """Serialização produz exatamente a estrutura JSON esperada."""
+        result = RenderPdfResult(
+            view_id="v",
+            page_type="A4",
+            output_path="/out.pdf",
+            file_size_bytes=512,
+        )
+
+        dump = result.model_dump(mode="json")
+
+        expected_keys = {
+            "status",
+            "view_id",
+            "page_type",
+            "mime_type",
+            "output_path",
+            "file_size_bytes",
+            "save_error",
+        }
+        assert set(dump.keys()) == expected_keys
+
+    def test_status_sempre_success(self) -> None:
+        """O campo status é sempre 'success' (Literal constraint)."""
+        result = RenderPdfResult(view_id="x", page_type="A3")
+
+        assert result.status == "success"
+
+    def test_status_literal_rejeita_outros_valores(self) -> None:
+        """Literal['success'] rejeita outros valores de status."""
+        with pytest.raises(ValidationError):
+            RenderPdfResult(view_id="x", page_type="A4", status="error")
+
+    def test_com_save_error_preenchido(self) -> None:
+        """save_error é string quando o salvamento falha."""
+        result = RenderPdfResult(
+            view_id="v",
+            page_type="A4",
+            save_error="Disk full",
+        )
+
+        dump = result.model_dump(mode="json")
+
+        assert dump["save_error"] == "Disk full"
+        assert dump["output_path"] is None
+        assert dump["file_size_bytes"] is None
+
+    def test_mime_type_default_application_pdf(self) -> None:
+        """mime_type default é 'application/pdf'."""
+        result = RenderPdfResult(view_id="v", page_type="A4")
+
+        assert result.mime_type == "application/pdf"
 # Capacidade 6 — Permissions ---------------------------------------------------
 
 
