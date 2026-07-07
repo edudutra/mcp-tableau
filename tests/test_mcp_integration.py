@@ -37,7 +37,7 @@ from mcp_tableau.models import (
     StructureReport,
 )
 from mcp_tableau.tableau.client import PublishedRef, TableauClientError
-from mcp_tableau.tools import deploy, hyper, metadata, qa, visual
+from mcp_tableau.tools import deploy, hyper, metadata, permissions, qa, visual
 
 # Ferramentas das quatro capacidades base (deploy, visual, QA, metadados/linhagem).
 _BASE_TOOLS = frozenset(
@@ -68,8 +68,26 @@ _HYPER_TOOLS = frozenset(
     }
 )
 
-# Conjunto completo esperado no servidor (RF22): 10 base + 7 Hyper = 17 tools.
-_EXPECTED_TOOLS = _BASE_TOOLS | _HYPER_TOOLS
+# Ferramentas da Capacidade 6 (Permissions).
+_PERMISSIONS_TOOLS = frozenset(
+    {
+        "list_users",
+        "list_groups",
+        "resolve_user",
+        "resolve_group",
+        "list_group_members",
+        "grant_permissions",
+        "revoke_permissions",
+        "list_permissions",
+        "set_default_permissions",
+        "list_default_permissions",
+        "effective_permissions",
+        "replace_permissions",
+    }
+)
+
+# Conjunto completo esperado no servidor: 10 base + 7 Hyper + 12 Permissions = 29 tools.
+_EXPECTED_TOOLS = _BASE_TOOLS | _HYPER_TOOLS | _PERMISSIONS_TOOLS
 
 
 def _await[T](coro: Awaitable[T]) -> T:
@@ -110,7 +128,7 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     def fake_session(_settings: object):
         yield client
 
-    for module in (deploy, visual, qa, metadata):
+    for module in (deploy, visual, qa, metadata, permissions):
         monkeypatch.setattr(module, "load_settings", lambda: object())
         monkeypatch.setattr(module, "tableau_session", fake_session)
     return client
@@ -394,7 +412,7 @@ def hyper_engine(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return engine
 
 
-def test_servidor_expoe_dezessete_tools(mcp_server: server.FastMCP) -> None:
+def test_servidor_expoe_vinte_e_sete_tools(mcp_server: server.FastMCP) -> None:
     async def scenario() -> set[str]:
         async with Client(mcp_server) as client:
             tools = await client.list_tools()
@@ -402,10 +420,12 @@ def test_servidor_expoe_dezessete_tools(mcp_server: server.FastMCP) -> None:
 
     discovered = _await(scenario())
 
-    assert len(discovered) == 17
+    assert len(discovered) == 29
     assert discovered == set(_EXPECTED_TOOLS)
     # As sete tools de Hyper Datasources estão entre as descobertas.
     assert _HYPER_TOOLS <= discovered
+    # As doze tools de Permissions (Capacidade 6) estão entre as descobertas.
+    assert _PERMISSIONS_TOOLS <= discovered
 
 
 def test_tools_hyper_declaram_schemas_de_entrada_validos(
@@ -541,3 +561,142 @@ def test_run_registra_ferramentas_e_inicia_stdio(
 
     register.assert_called_once_with()
     runner.assert_called_once_with(transport="stdio")
+
+
+# -- Capacidade 6: Permissions via transporte MCP --------------------------------
+
+
+def test_mcp_cap6_todas_dez_tools_registradas(mcp_server: server.FastMCP) -> None:
+    """Verifica que todas as 12 ferramentas de permissões estão registradas."""
+
+    async def scenario() -> set[str]:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return {tool.name for tool in tools}
+
+    discovered = _await(scenario())
+
+    assert _PERMISSIONS_TOOLS <= discovered
+    assert len(_PERMISSIONS_TOOLS) == 12
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    sorted(_PERMISSIONS_TOOLS),
+    ids=sorted(_PERMISSIONS_TOOLS),
+)
+def test_mcp_cap6_tool_descobrivel_e_com_docstring(
+    mcp_server: server.FastMCP, tool_name: str
+) -> None:
+    """Cada ferramenta de Cap 6 é descobrível e tem docstring."""
+
+    async def scenario() -> dict[str, str | None]:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return {tool.name: tool.description for tool in tools}
+
+    descriptions = _await(scenario())
+
+    assert tool_name in descriptions, f"Tool '{tool_name}' não registrada no MCP"
+    assert descriptions[tool_name], f"Tool '{tool_name}' sem docstring/descrição"
+
+
+def test_mcp_cap6_tools_declaram_schemas_de_entrada_validos(
+    mcp_server: server.FastMCP,
+) -> None:
+    """Todas as tools de permissões declaram schemas de entrada válidos."""
+
+    async def scenario() -> dict[str, dict]:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return {
+            tool.name: tool.inputSchema
+            for tool in tools
+            if tool.name in _PERMISSIONS_TOOLS
+        }
+
+    schemas = _await(scenario())
+
+    assert set(schemas) == set(_PERMISSIONS_TOOLS)
+    for name, schema in schemas.items():
+        assert schema.get("type") == "object", f"{name} sem schema de objeto"
+        # Todas as tools de permissions têm pelo menos propriedades (opcionais ou não).
+        assert "properties" in schema, f"{name} sem propriedades de entrada"
+
+
+def test_mcp_cap6_grant_permissions_contrato_de_entrada(
+    mcp_server: server.FastMCP,
+) -> None:
+    """grant_permissions declara os parâmetros obrigatórios do contrato."""
+
+    async def scenario() -> dict:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return next(t.inputSchema for t in tools if t.name == "grant_permissions")
+
+    schema = _await(scenario())
+
+    props = schema["properties"]
+    assert "content_type" in props
+    assert "content_id" in props
+    assert "grantee_type" in props
+    assert "capabilities" in props
+
+
+def test_mcp_cap6_list_permissions_contrato_de_entrada(
+    mcp_server: server.FastMCP,
+) -> None:
+    """list_permissions declara content_type e content_id como obrigatórios."""
+
+    async def scenario() -> dict:
+        async with Client(mcp_server) as client:
+            tools = await client.list_tools()
+        return next(t.inputSchema for t in tools if t.name == "list_permissions")
+
+    schema = _await(scenario())
+
+    props = schema["properties"]
+    assert "content_type" in props
+    assert "content_id" in props
+
+
+def test_mcp_cap6_list_users_chamada_serializa_resultado(
+    mcp_server: server.FastMCP, fake_client: MagicMock
+) -> None:
+    """list_users retorna envelope de sucesso serializado via MCP."""
+    fake_client.list_users.return_value = [
+        ("u1", "alice", "Explorer"),
+    ]
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool("list_users", {})
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    assert payload["status"] == "success"
+    assert len(payload["users"]) == 1
+    assert payload["users"][0]["name"] == "alice"
+    assert payload["users"][0]["id"] == "u1"
+
+
+def test_mcp_cap6_resolve_user_chamada_serializa_resultado(
+    mcp_server: server.FastMCP, fake_client: MagicMock
+) -> None:
+    """resolve_user retorna envelope de sucesso com match exato."""
+    fake_client.resolve_user.return_value = ("u2", "Creator")
+
+    async def scenario():
+        async with Client(mcp_server) as client:
+            return await client.call_tool("resolve_user", {"name": "bob"})
+
+    result = _await(scenario())
+
+    assert result.is_error is False
+    payload = result.structured_content["result"]
+    assert payload["status"] == "success"
+    assert payload["id"] == "u2"
+    assert payload["name"] == "bob"
+    assert payload["site_role"] == "Creator"

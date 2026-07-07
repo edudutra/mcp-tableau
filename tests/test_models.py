@@ -4,21 +4,34 @@ import pytest
 from pydantic import ValidationError
 
 from mcp_tableau.models import (
+    CapabilityRule,
     ConnectionInfo,
+    DefaultPermissionsResult,
     DictionaryField,
+    EffectiveCapability,
+    EffectivePermissionsResult,
     ErrorCode,
     ExceededDimension,
     FieldInfo,
     FilterInfo,
+    GranteePermissions,
+    GroupInfo,
+    GroupListResult,
+    GroupMembersResult,
     HyperColumn,
     HyperCreateResult,
     HyperQueryResult,
     HyperTableInfo,
     InlineColumn,
+    PermContentType,
+    PermissionsResult,
     PublishResult,
+    ResolveResult,
     SheetRef,
     StructureReport,
     ToolError,
+    UserInfo,
+    UserListResult,
     VolumeAlert,
 )
 
@@ -245,3 +258,170 @@ def test_hyper_table_info_row_count_nulo_permitido() -> None:
 
     # Contagem não determinável é normalizada para null (campo presente).
     assert dump["row_count"] is None
+
+
+# Capacidade 6 — Permissions ---------------------------------------------------
+
+
+def test_perm_content_type_tem_seis_membros_lowercase() -> None:
+    membros = list(PermContentType)
+
+    assert len(membros) == 6
+    esperados = {
+        "project",
+        "workbook",
+        "datasource",
+        "view",
+        "flow",
+        "virtual_connection",
+    }
+    assert {m.value for m in membros} == esperados
+    # StrEnum: o valor coincide com a string e é minúsculo.
+    for membro in membros:
+        assert isinstance(membro, str)
+        assert membro.value == membro.value.lower()
+
+
+def test_permissions_result_serializa_grantee_e_capability_aninhados() -> None:
+    resultado = PermissionsResult(
+        content_type="workbook",
+        content_id="wb-luid",
+        content_name="Vendas Regionais",
+        permissions=[
+            GranteePermissions(
+                grantee_type="group",
+                grantee_id="grp-luid",
+                grantee_name="Analistas",
+                capabilities=[
+                    CapabilityRule(name="Read", mode="Allow"),
+                    CapabilityRule(name="Write", mode="Deny"),
+                ],
+            )
+        ],
+    )
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["content_type"] == "workbook"
+    grantee = dump["permissions"][0]
+    assert grantee["grantee_type"] == "group"
+    assert grantee["grantee_name"] == "Analistas"
+    assert grantee["capabilities"] == [
+        {"name": "Read", "mode": "Allow"},
+        {"name": "Write", "mode": "Deny"},
+    ]
+
+
+def test_default_permissions_result_valida_for_content_type() -> None:
+    resultado = DefaultPermissionsResult(
+        project_id="prj-luid",
+        project_name="Financeiro",
+        for_content_type="workbook",
+        permissions=[],
+    )
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["for_content_type"] == "workbook"
+    # Lista vazia é estado válido (projeto sem padrões explícitos).
+    assert dump["permissions"] == []
+
+
+def test_user_list_result_lista_vazia_e_total_zero_valido() -> None:
+    resultado = UserListResult(users=[], total_count=0)
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["users"] == []
+    assert dump["total_count"] == 0
+
+
+def test_group_list_e_members_serializam_usuarios() -> None:
+    usuario = UserInfo(id="u1", name="jsmith", site_role="Viewer")
+    grupos = GroupListResult(
+        groups=[GroupInfo(id="g1", name="Analistas", user_count=3)],
+        total_count=1,
+    )
+    membros = GroupMembersResult(
+        group_id="g1",
+        group_name="Analistas",
+        members=[usuario],
+    )
+
+    grupos_dump = grupos.model_dump(mode="json")
+    membros_dump = membros.model_dump(mode="json")
+
+    assert grupos_dump["groups"][0]["user_count"] == 3
+    assert membros_dump["members"][0]["name"] == "jsmith"
+    # `last_login` ausente normaliza para null (campo presente).
+    assert membros_dump["members"][0]["last_login"] is None
+
+
+def test_resolve_result_site_role_none_para_grupo_valido() -> None:
+    # Resolução de grupo não tem site role.
+    resolucao = ResolveResult(id="g1", name="Analistas")
+
+    dump = resolucao.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["site_role"] is None
+
+
+def test_resolve_result_usuario_com_site_role() -> None:
+    resolucao = ResolveResult(id="u1", name="jsmith", site_role="Creator")
+
+    dump = resolucao.model_dump(mode="json")
+
+    assert dump["site_role"] == "Creator"
+
+
+def test_effective_permissions_result_serializa_todos_os_campos() -> None:
+    resultado = EffectivePermissionsResult(
+        content_type="workbook",
+        content_id="wb-luid",
+        user_id="u1",
+        user_name="jsmith",
+        site_role="Viewer",
+        is_owner=False,
+        is_admin=False,
+        capabilities=[
+            EffectiveCapability(name="Read", mode="Allow", reason="group_rule"),
+            EffectiveCapability(name="Write", mode="Deny", reason="site_role_cap"),
+        ],
+        summary="Acesso nível Viewer (Read, Filter, ExportImage).",
+    )
+
+    dump = resultado.model_dump(mode="json")
+
+    assert dump["status"] == "success"
+    assert dump["is_owner"] is False
+    assert dump["is_admin"] is False
+    assert dump["capabilities"][0] == {
+        "name": "Read",
+        "mode": "Allow",
+        "reason": "group_rule",
+    }
+    assert dump["capabilities"][1]["reason"] == "site_role_cap"
+    assert dump["summary"].startswith("Acesso nível Viewer")
+
+
+def test_effective_capability_rejeita_mode_invalido() -> None:
+    # Apenas "Allow"/"Deny" são aceitos no modo efetivo.
+    with pytest.raises(ValidationError):
+        EffectiveCapability(name="Read", mode="Unspecified", reason="group_rule")
+
+    assert EffectiveCapability(name="Read", mode="Allow", reason="user_rule").mode == (
+        "Allow"
+    )
+
+
+def test_error_code_contem_novos_codigos_permissions() -> None:
+    esperados = ("LOCKED_PROJECT", "SHOW_TABS_ENABLED")
+    for codigo in esperados:
+        assert codigo in ErrorCode.__members__
+        assert ErrorCode[codigo].value == codigo
+    # Acessível como atributo (contrato usado pelas ferramentas de permissão).
+    assert ErrorCode.LOCKED_PROJECT == "LOCKED_PROJECT"

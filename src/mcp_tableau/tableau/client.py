@@ -34,7 +34,7 @@ from tableauserverclient.server.endpoint.exceptions import (
     ServerResponseError,
 )
 
-from mcp_tableau.models import ContentRef, ErrorCode
+from mcp_tableau.models import ContentRef, ErrorCode, PermContentType
 
 if TYPE_CHECKING:
     from mcp_tableau.config import Settings
@@ -240,15 +240,21 @@ class TableauClient:
         """Executa ``operation()`` e, em 401/sessão expirada, re-autentica e repete.
 
         A operação é repetida no máximo **uma** vez. Outros erros do TSC são
-        traduzidos para `TableauClientError`.
+        traduzidos para `TableauClientError`. Se a operação já levantou um
+        ``TableauClientError`` (tradução feita internamente), ele é propagado
+        sem re-tradução.
         """
         try:
             return operation()
+        except TableauClientError:
+            raise
         except (ServerResponseError, NotSignedInError) as exc:
             if isinstance(exc, NotSignedInError) or _is_auth_error(exc):
                 self.sign_in()
                 try:
                     return operation()
+                except TableauClientError:
+                    raise
                 except Exception as retry_exc:  # noqa: BLE001
                     raise _translate(retry_exc) from retry_exc
             raise _translate(exc) from exc
@@ -449,6 +455,404 @@ class TableauClient:
                         )
                     )
             return results
+
+        return self._with_reauth(op)
+
+    # -- Resolução de usuários e grupos (Capacidade 6) -------------------------
+
+    def resolve_user(self, name: str) -> tuple[str, str]:
+        """Resolve um nome de usuário (site username) para ``(LUID, site_role)``.
+
+        Usa filtro server-side (``server.users.filter(name=...)``), conforme
+        ADR-004. Levanta ``TableauClientError(NOT_FOUND)`` se o usuário não
+        existir no site.
+        """
+
+        def op() -> tuple[str, str]:
+            req_options = TSC.RequestOptions()
+            req_options.filter.add(
+                TSC.Filter(
+                    TSC.RequestOptions.Field.Name,
+                    TSC.RequestOptions.Operator.Equals,
+                    name,
+                )
+            )
+            users, _ = self._server.users.get(req_options)
+            if not users:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Usuário '{name}' não encontrado no site.",
+                )
+            user = users[0]
+            return (user.id, user.site_role or "")
+
+        return self._with_reauth(op)
+
+    def list_users(self, name_filter: str | None = None) -> list[tuple[str, str, str]]:
+        """Lista usuários do site; retorna lista de ``(id, name, site_role)``.
+
+        Se ``name_filter`` for fornecido, aplica filtro server-side por nome
+        (contains). Paginação completa via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, str]]:
+            req_options = TSC.RequestOptions()
+            if name_filter:
+                req_options.filter.add(
+                    TSC.Filter(
+                        TSC.RequestOptions.Field.Name,
+                        TSC.RequestOptions.Operator.Equals,
+                        name_filter,
+                    )
+                )
+            results: list[tuple[str, str, str]] = []
+            for user in TSC.Pager(self._server.users, req_options):
+                results.append((user.id, user.name or "", user.site_role or ""))
+            return results
+
+        return self._with_reauth(op)
+
+    def resolve_group(self, name: str) -> tuple[str, int | None]:
+        """Resolve um nome de grupo para ``(LUID, user_count)``.
+
+        Usa filtro server-side (``server.groups.filter(name=...)``), conforme
+        ADR-004. Levanta ``TableauClientError(NOT_FOUND)`` se o grupo não existir.
+        """
+
+        def op() -> tuple[str, int | None]:
+            req_options = TSC.RequestOptions()
+            req_options.filter.add(
+                TSC.Filter(
+                    TSC.RequestOptions.Field.Name,
+                    TSC.RequestOptions.Operator.Equals,
+                    name,
+                )
+            )
+            groups, _ = self._server.groups.get(req_options)
+            if not groups:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Grupo '{name}' não encontrado no site.",
+                )
+            group = groups[0]
+            user_count = getattr(group, "user_count", None)
+            return (group.id, user_count)
+
+        return self._with_reauth(op)
+
+    def list_groups(
+        self, name_filter: str | None = None
+    ) -> list[tuple[str, str, int | None]]:
+        """Lista grupos do site; retorna lista de ``(id, name, user_count)``.
+
+        Se ``name_filter`` for fornecido, aplica filtro server-side por nome.
+        Paginação completa via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, int | None]]:
+            req_options = TSC.RequestOptions()
+            if name_filter:
+                req_options.filter.add(
+                    TSC.Filter(
+                        TSC.RequestOptions.Field.Name,
+                        TSC.RequestOptions.Operator.Equals,
+                        name_filter,
+                    )
+                )
+            results: list[tuple[str, str, int | None]] = []
+            for group in TSC.Pager(self._server.groups, req_options):
+                user_count = getattr(group, "user_count", None)
+                results.append((group.id, group.name or "", user_count))
+            return results
+
+        return self._with_reauth(op)
+
+    def list_group_members(self, group_id: str) -> list[tuple[str, str, str]]:
+        """Lista membros de um grupo; retorna lista de ``(id, name, site_role)``.
+
+        Usa ``populate_users`` para carregar os membros e pagina via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, str]]:
+            req_options = TSC.RequestOptions()
+            results: list[tuple[str, str, str]] = []
+            for user in TSC.Pager(
+                lambda opts: self._server.groups.populate_users(
+                    self._server.groups.get_by_id(group_id), opts
+                ),
+                req_options,
+            ):
+                results.append((user.id, user.name or "", user.site_role or ""))
+            return results
+
+        return self._with_reauth(op)
+
+    # -- Lock state e resolução de projeto pai ---------------------------------
+
+    def get_project_lock_state(self, project_id: str) -> str:
+        """Retorna o valor de ``content_permissions`` do projeto.
+
+        Valores possíveis: ``"ManagedByOwner"``, ``"LockedToProject"``,
+        ``"LockedToProjectWithoutNested"``.
+        """
+
+        def op() -> str:
+            project = self._server.projects.get_by_id(project_id)
+            return project.content_permissions or "ManagedByOwner"
+
+        return self._with_reauth(op)
+
+    def get_content_project_id(
+        self, content_type: PermContentType, content_id: str
+    ) -> str:
+        """Retorna o ``project_id`` do item de conteúdo informado.
+
+        Para ``PermContentType.project``, retorna o próprio ``content_id`` (um
+        projeto é seu próprio container). Para os demais tipos, busca o item via
+        ``get_by_id`` e retorna ``project_id``.
+        """
+        if content_type == PermContentType.project:
+            return content_id
+
+        # Dispatch para o endpoint correto por tipo de conteúdo.
+        _endpoint_map: dict[PermContentType, object] = {
+            PermContentType.workbook: self._server.workbooks,
+            PermContentType.datasource: self._server.datasources,
+            PermContentType.view: self._server.views,
+            PermContentType.flow: self._server.flows,
+            PermContentType.virtual_connection: self._server.virtual_connections,
+        }
+        endpoint = _endpoint_map.get(content_type)
+        if endpoint is None:
+            raise TableauClientError(
+                ErrorCode.NOT_FOUND,
+                f"Tipo de conteúdo '{content_type}' não suportado.",
+            )
+
+        def op() -> str:
+            item = endpoint.get_by_id(content_id)  # type: ignore[union-attr]
+            project_id = getattr(item, "project_id", None)
+            if not project_id:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Não foi possível determinar o projeto do "
+                    f"{content_type} '{content_id}'.",
+                )
+            return project_id
+
+        return self._with_reauth(op)
+
+    # -- Dispatch de permissões (Capacidade 6, ADR-003) --------------------------
+
+    # Tipo interno do dispatch: tupla (endpoint TSC, função de fetch do item por ID).
+    # O endpoint expõe `populate_permissions`, `update_permissions` (ou
+    # `add_permissions` para virtual_connection), e `delete_permission`.
+    # A função de fetch retorna o item TSC necessário para as chamadas de
+    # permissão.
+
+    @property
+    def _perm_dispatch(
+        self,
+    ) -> dict[PermContentType, tuple[object, Callable[[str], object]]]:
+        """Mapeamento de ``PermContentType`` → (endpoint, fetch_item_by_id).
+
+        Construído como property para acessar ``self._server`` (disponível
+        apenas após ``__init__``). A indireção é mínima — um dict lookup por
+        chamada.
+        """
+        return {
+            PermContentType.project: (
+                self._server.projects,
+                self._server.projects.get_by_id,
+            ),
+            PermContentType.workbook: (
+                self._server.workbooks,
+                self._server.workbooks.get_by_id,
+            ),
+            PermContentType.datasource: (
+                self._server.datasources,
+                self._server.datasources.get_by_id,
+            ),
+            PermContentType.view: (
+                self._server.views,
+                self._server.views.get_by_id,
+            ),
+            PermContentType.flow: (
+                self._server.flows,
+                self._server.flows.get_by_id,
+            ),
+            PermContentType.virtual_connection: (
+                self._server.virtual_connections,
+                self._server.virtual_connections.get_by_id,
+            ),
+        }
+
+    def _validate_content_type(self, content_type: PermContentType) -> None:
+        """Valida que o ``content_type`` é suportado pelo dispatch."""
+        if content_type not in self._perm_dispatch:
+            raise TableauClientError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Tipo de conteúdo '{content_type}' não suportado para permissões.",
+            )
+
+    def _check_view_show_tabs(
+        self, content_type: PermContentType, item: object
+    ) -> None:
+        """Para views, verifica se ``showTabs`` está habilitado no workbook pai.
+
+        Quando ``showTabs=True``, o Tableau ignora permissões em nível de view
+        (usa as do workbook). O método levanta ``TableauClientError(SHOW_TABS_ENABLED)``
+        para que as tools possam fornecer orientação clara ao agente.
+        """
+        if content_type != PermContentType.view:
+            return
+        workbook_id = getattr(item, "workbook_id", None)
+        if not workbook_id:
+            return
+
+        def fetch_wb() -> object:
+            return self._server.workbooks.get_by_id(workbook_id)
+
+        workbook = self._with_reauth(fetch_wb)
+        if getattr(workbook, "show_tabs", False):
+            raise TableauClientError(
+                ErrorCode.SHOW_TABS_ENABLED,
+                "O workbook pai tem 'showTabs' habilitado. "
+                "Permissões em nível de view são ignoradas pelo Tableau nesse modo. "
+                "Altere as permissões no workbook ou desabilite showTabs.",
+            )
+
+    def get_permissions(
+        self, content_type: PermContentType, content_id: str
+    ) -> list[object]:
+        """Obtém as regras de permissão de qualquer tipo de conteúdo.
+
+        Retorna ``list[TSC.PermissionsRule]``. O dispatch é feito via
+        ``_perm_dispatch`` (ADR-003).
+        """
+        self._validate_content_type(content_type)
+        endpoint, fetch_item = self._perm_dispatch[content_type]
+
+        def op() -> list[object]:
+            item = fetch_item(content_id)
+            endpoint.populate_permissions(item)
+            return item.permissions
+
+        return self._with_reauth(op)
+
+    def update_permissions(
+        self,
+        content_type: PermContentType,
+        content_id: str,
+        rules: list[object],
+    ) -> list[object]:
+        """Aplica (adiciona/atualiza) regras de permissão em um conteúdo.
+
+        Retorna a lista atualizada de ``TSC.PermissionsRule`` conforme retornada
+        pelo servidor. Para ``virtual_connection`` usa ``add_permissions``
+        (nome diferente na TSC).
+        """
+        self._validate_content_type(content_type)
+        endpoint, fetch_item = self._perm_dispatch[content_type]
+
+        def op() -> list[object]:
+            item = fetch_item(content_id)
+            self._check_view_show_tabs(content_type, item)
+            # virtual_connections usa `add_permissions` em vez de `update_permissions`
+            if content_type == PermContentType.virtual_connection:
+                return endpoint.add_permissions(item, rules)
+            return endpoint.update_permissions(item, rules)
+
+        return self._with_reauth(op)
+
+    def delete_permission(
+        self,
+        content_type: PermContentType,
+        content_id: str,
+        rule: object,
+    ) -> None:
+        """Remove uma regra de permissão específica de um conteúdo.
+
+        ``rule`` deve ser um ``TSC.PermissionsRule`` com o grantee e capabilities
+        a remover.
+        """
+        self._validate_content_type(content_type)
+        endpoint, fetch_item = self._perm_dispatch[content_type]
+
+        def op() -> None:
+            item = fetch_item(content_id)
+            self._check_view_show_tabs(content_type, item)
+            endpoint.delete_permission(item, rule)
+
+        self._with_reauth(op)
+
+    # -- Default permissions (projetos) ----------------------------------------
+
+    # Mapeamento de PermContentType → Resource string do TSC para default
+    # permissions. Apenas tipos que suportam default permissions em projetos.
+    _DEFAULT_PERM_RESOURCE_MAP: dict[PermContentType, str] = {
+        PermContentType.workbook: "workbook",
+        PermContentType.datasource: "datasource",
+        PermContentType.flow: "flow",
+        PermContentType.virtual_connection: "virtualConnection",
+    }
+
+    def get_default_permissions(
+        self, project_id: str, content_type: PermContentType
+    ) -> list[object]:
+        """Obtém as permissões padrão de um projeto para um tipo de conteúdo.
+
+        Retorna ``list[TSC.PermissionsRule]``. Suporta apenas tipos que possuem
+        default permissions em projetos (workbook, datasource, flow,
+        virtual_connection).
+        """
+        resource = self._DEFAULT_PERM_RESOURCE_MAP.get(content_type)
+        if resource is None:
+            raise TableauClientError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Tipo '{content_type}' não suporta permissões padrão de projeto. "
+                f"Tipos válidos: {', '.join(self._DEFAULT_PERM_RESOURCE_MAP.keys())}.",
+            )
+
+        def op() -> list[object]:
+            project = self._server.projects.get_by_id(project_id)
+            self._server.projects._default_permissions.populate_default_permissions(
+                project, resource
+            )
+            # O TSC armazena como atributo dinâmico no projeto
+            attr = f"_default_{resource}_permissions".lower()
+            fetcher = getattr(project, attr, None)
+            if fetcher is None:
+                return []
+            # O fetcher é uma callable que retorna a lista
+            if callable(fetcher):
+                return fetcher()
+            return fetcher  # type: ignore[return-value]
+
+        return self._with_reauth(op)
+
+    def update_default_permissions(
+        self,
+        project_id: str,
+        content_type: PermContentType,
+        rules: list[object],
+    ) -> list[object]:
+        """Aplica regras de permissão padrão em um projeto para um tipo de conteúdo.
+
+        Retorna a lista atualizada de ``TSC.PermissionsRule``.
+        """
+        resource = self._DEFAULT_PERM_RESOURCE_MAP.get(content_type)
+        if resource is None:
+            raise TableauClientError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Tipo '{content_type}' não suporta permissões padrão de projeto. "
+                f"Tipos válidos: {', '.join(self._DEFAULT_PERM_RESOURCE_MAP.keys())}.",
+            )
+
+        def op() -> list[object]:
+            project = self._server.projects.get_by_id(project_id)
+            dp = self._server.projects._default_permissions
+            return dp.update_default_permissions(project, rules, resource)
 
         return self._with_reauth(op)
 
