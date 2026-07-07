@@ -314,6 +314,56 @@ class TestRenderViewImageFileSave:
         assert isinstance(payload, RenderImageResult)
         assert isinstance(block, Image)
 
+    def test_include_content_false_wrong_extension_still_returns_inline_content(
+        self, patched_session: MagicMock, tmp_path: Path
+    ) -> None:
+        """include_content=false + wrong extension → save fails, tuple with image."""
+        png = _png_bytes("white")
+        patched_session.render_view_image.return_value = png
+        dest = tmp_path / "render.pdf"
+
+        result = visual.render_view_image(
+            "view-1", output_path=str(dest), include_content=False
+        )
+
+        assert isinstance(result, tuple)
+        payload, block = result
+        assert isinstance(payload, RenderImageResult)
+        assert isinstance(block, Image)
+        assert payload.save_error is not None
+        assert ".pdf" in payload.save_error
+        assert payload.output_path is None
+        assert payload.file_size_bytes is None
+        assert not dest.exists()
+
+    def test_include_content_false_oserror_still_returns_inline_content(
+        self,
+        patched_session: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """include_content=false + OSError → save fails, tuple with image."""
+        png = _png_bytes("white")
+        patched_session.render_view_image.return_value = png
+        dest = tmp_path / "render.png"
+
+        def _raise_oserror(path, data):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(visual, "atomic_write_bytes", _raise_oserror)
+
+        result = visual.render_view_image(
+            "view-1", output_path=str(dest), include_content=False
+        )
+
+        assert isinstance(result, tuple)
+        payload, block = result
+        assert isinstance(payload, RenderImageResult)
+        assert isinstance(block, Image)
+        assert payload.save_error == "Permission denied"
+        assert payload.output_path is None
+        assert payload.file_size_bytes is None
+
     def test_file_content_on_disk_matches_png_bytes(
         self, patched_session: MagicMock, tmp_path: Path
     ) -> None:
@@ -393,6 +443,19 @@ def test_render_workbook_pdf_page_type_default_a4(
     patched_session.render_view_pdf.assert_called_once_with(
         "view-1", "A4", {"Region": "West"}
     )
+
+
+def test_render_workbook_pdf_view_inexistente_retorna_not_found(
+    patched_session: MagicMock,
+) -> None:
+    patched_session.render_view_pdf.side_effect = TableauClientError(
+        ErrorCode.NOT_FOUND, "Recurso não encontrado no Tableau."
+    )
+
+    result = visual.render_workbook_pdf("missing")
+
+    assert isinstance(result, ToolError)
+    assert result.error.code == ErrorCode.NOT_FOUND
 
 
 # ===========================================================================
@@ -615,6 +678,56 @@ class TestRenderWorkbookPdfFileSave:
         payload, block = result
         assert isinstance(payload, RenderPdfResult)
         assert isinstance(block, File)
+
+    def test_include_content_false_wrong_extension_still_returns_inline_content(
+        self, patched_session: MagicMock, tmp_path: Path
+    ) -> None:
+        """include_content=false + wrong extension → save fails, tuple with file."""
+        pdf_data = b"%PDF-1.4 wrong ext no content"
+        patched_session.render_view_pdf.return_value = pdf_data
+        dest = tmp_path / "render.png"
+
+        result = visual.render_workbook_pdf(
+            "view-1", output_path=str(dest), include_content=False
+        )
+
+        assert isinstance(result, tuple)
+        payload, block = result
+        assert isinstance(payload, RenderPdfResult)
+        assert isinstance(block, File)
+        assert payload.save_error is not None
+        assert ".png" in payload.save_error
+        assert payload.output_path is None
+        assert payload.file_size_bytes is None
+        assert not dest.exists()
+
+    def test_include_content_false_oserror_still_returns_inline_content(
+        self,
+        patched_session: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """include_content=false + OSError → save fails, tuple with file."""
+        pdf_data = b"%PDF-1.4 oserror no content"
+        patched_session.render_view_pdf.return_value = pdf_data
+        dest = tmp_path / "render.pdf"
+
+        def _raise_oserror(path, data):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(visual, "atomic_write_bytes", _raise_oserror)
+
+        result = visual.render_workbook_pdf(
+            "view-1", output_path=str(dest), include_content=False
+        )
+
+        assert isinstance(result, tuple)
+        payload, block = result
+        assert isinstance(payload, RenderPdfResult)
+        assert isinstance(block, File)
+        assert payload.save_error == "Permission denied"
+        assert payload.output_path is None
+        assert payload.file_size_bytes is None
 
     def test_end_to_end_mocked_session_render_save_verify(
         self, patched_session: MagicMock, tmp_path: Path
