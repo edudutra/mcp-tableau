@@ -34,7 +34,7 @@ from tableauserverclient.server.endpoint.exceptions import (
     ServerResponseError,
 )
 
-from mcp_tableau.models import ContentRef, ErrorCode
+from mcp_tableau.models import ContentRef, ErrorCode, PermContentType
 
 if TYPE_CHECKING:
     from mcp_tableau.config import Settings
@@ -240,15 +240,21 @@ class TableauClient:
         """Executa ``operation()`` e, em 401/sessão expirada, re-autentica e repete.
 
         A operação é repetida no máximo **uma** vez. Outros erros do TSC são
-        traduzidos para `TableauClientError`.
+        traduzidos para `TableauClientError`. Se a operação já levantou um
+        ``TableauClientError`` (tradução feita internamente), ele é propagado
+        sem re-tradução.
         """
         try:
             return operation()
+        except TableauClientError:
+            raise
         except (ServerResponseError, NotSignedInError) as exc:
             if isinstance(exc, NotSignedInError) or _is_auth_error(exc):
                 self.sign_in()
                 try:
                     return operation()
+                except TableauClientError:
+                    raise
                 except Exception as retry_exc:  # noqa: BLE001
                     raise _translate(retry_exc) from retry_exc
             raise _translate(exc) from exc
@@ -449,6 +455,190 @@ class TableauClient:
                         )
                     )
             return results
+
+        return self._with_reauth(op)
+
+    # -- Resolução de usuários e grupos (Capacidade 6) -------------------------
+
+    def resolve_user(self, name: str) -> tuple[str, str]:
+        """Resolve um nome de usuário (site username) para ``(LUID, site_role)``.
+
+        Usa filtro server-side (``server.users.filter(name=...)``), conforme
+        ADR-004. Levanta ``TableauClientError(NOT_FOUND)`` se o usuário não
+        existir no site.
+        """
+
+        def op() -> tuple[str, str]:
+            req_options = TSC.RequestOptions()
+            req_options.filter.add(
+                TSC.Filter(
+                    TSC.RequestOptions.Field.Name,
+                    TSC.RequestOptions.Operator.Equals,
+                    name,
+                )
+            )
+            users, _ = self._server.users.get(req_options)
+            if not users:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Usuário '{name}' não encontrado no site.",
+                )
+            user = users[0]
+            return (user.id, user.site_role or "")
+
+        return self._with_reauth(op)
+
+    def list_users(self, name_filter: str | None = None) -> list[tuple[str, str, str]]:
+        """Lista usuários do site; retorna lista de ``(id, name, site_role)``.
+
+        Se ``name_filter`` for fornecido, aplica filtro server-side por nome
+        (contains). Paginação completa via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, str]]:
+            req_options = TSC.RequestOptions()
+            if name_filter:
+                req_options.filter.add(
+                    TSC.Filter(
+                        TSC.RequestOptions.Field.Name,
+                        TSC.RequestOptions.Operator.Equals,
+                        name_filter,
+                    )
+                )
+            results: list[tuple[str, str, str]] = []
+            for user in TSC.Pager(self._server.users, req_options):
+                results.append((user.id, user.name or "", user.site_role or ""))
+            return results
+
+        return self._with_reauth(op)
+
+    def resolve_group(self, name: str) -> tuple[str, int | None]:
+        """Resolve um nome de grupo para ``(LUID, user_count)``.
+
+        Usa filtro server-side (``server.groups.filter(name=...)``), conforme
+        ADR-004. Levanta ``TableauClientError(NOT_FOUND)`` se o grupo não existir.
+        """
+
+        def op() -> tuple[str, int | None]:
+            req_options = TSC.RequestOptions()
+            req_options.filter.add(
+                TSC.Filter(
+                    TSC.RequestOptions.Field.Name,
+                    TSC.RequestOptions.Operator.Equals,
+                    name,
+                )
+            )
+            groups, _ = self._server.groups.get(req_options)
+            if not groups:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Grupo '{name}' não encontrado no site.",
+                )
+            group = groups[0]
+            user_count = getattr(group, "user_count", None)
+            return (group.id, user_count)
+
+        return self._with_reauth(op)
+
+    def list_groups(
+        self, name_filter: str | None = None
+    ) -> list[tuple[str, str, int | None]]:
+        """Lista grupos do site; retorna lista de ``(id, name, user_count)``.
+
+        Se ``name_filter`` for fornecido, aplica filtro server-side por nome.
+        Paginação completa via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, int | None]]:
+            req_options = TSC.RequestOptions()
+            if name_filter:
+                req_options.filter.add(
+                    TSC.Filter(
+                        TSC.RequestOptions.Field.Name,
+                        TSC.RequestOptions.Operator.Equals,
+                        name_filter,
+                    )
+                )
+            results: list[tuple[str, str, int | None]] = []
+            for group in TSC.Pager(self._server.groups, req_options):
+                user_count = getattr(group, "user_count", None)
+                results.append((group.id, group.name or "", user_count))
+            return results
+
+        return self._with_reauth(op)
+
+    def list_group_members(self, group_id: str) -> list[tuple[str, str, str]]:
+        """Lista membros de um grupo; retorna lista de ``(id, name, site_role)``.
+
+        Usa ``populate_users`` para carregar os membros e pagina via ``TSC.Pager``.
+        """
+
+        def op() -> list[tuple[str, str, str]]:
+            req_options = TSC.RequestOptions()
+            results: list[tuple[str, str, str]] = []
+            for user in TSC.Pager(
+                lambda opts: self._server.groups.populate_users(
+                    self._server.groups.get_by_id(group_id), opts
+                ),
+                req_options,
+            ):
+                results.append((user.id, user.name or "", user.site_role or ""))
+            return results
+
+        return self._with_reauth(op)
+
+    # -- Lock state e resolução de projeto pai ---------------------------------
+
+    def get_project_lock_state(self, project_id: str) -> str:
+        """Retorna o valor de ``content_permissions`` do projeto.
+
+        Valores possíveis: ``"ManagedByOwner"``, ``"LockedToProject"``,
+        ``"LockedToProjectWithoutNested"``.
+        """
+
+        def op() -> str:
+            project = self._server.projects.get_by_id(project_id)
+            return project.content_permissions or "ManagedByOwner"
+
+        return self._with_reauth(op)
+
+    def get_content_project_id(
+        self, content_type: PermContentType, content_id: str
+    ) -> str:
+        """Retorna o ``project_id`` do item de conteúdo informado.
+
+        Para ``PermContentType.project``, retorna o próprio ``content_id`` (um
+        projeto é seu próprio container). Para os demais tipos, busca o item via
+        ``get_by_id`` e retorna ``project_id``.
+        """
+        if content_type == PermContentType.project:
+            return content_id
+
+        # Dispatch para o endpoint correto por tipo de conteúdo.
+        _endpoint_map: dict[PermContentType, object] = {
+            PermContentType.workbook: self._server.workbooks,
+            PermContentType.datasource: self._server.datasources,
+            PermContentType.view: self._server.views,
+            PermContentType.flow: self._server.flows,
+            PermContentType.virtual_connection: self._server.virtual_connections,
+        }
+        endpoint = _endpoint_map.get(content_type)
+        if endpoint is None:
+            raise TableauClientError(
+                ErrorCode.NOT_FOUND,
+                f"Tipo de conteúdo '{content_type}' não suportado.",
+            )
+
+        def op() -> str:
+            item = endpoint.get_by_id(content_id)  # type: ignore[union-attr]
+            project_id = getattr(item, "project_id", None)
+            if not project_id:
+                raise TableauClientError(
+                    ErrorCode.NOT_FOUND,
+                    f"Não foi possível determinar o projeto do "
+                    f"{content_type} '{content_id}'.",
+                )
+            return project_id
 
         return self._with_reauth(op)
 
