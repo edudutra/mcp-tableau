@@ -41,6 +41,9 @@ class ErrorCode(StrEnum):
     DB_CONNECTION_FAILED = "DB_CONNECTION_FAILED"
     DB_AUTH_FAILED = "DB_AUTH_FAILED"
     DB_QUERY_ERROR = "DB_QUERY_ERROR"
+    # Capacidade 6 — Permissions
+    LOCKED_PROJECT = "LOCKED_PROJECT"
+    SHOW_TABS_ENABLED = "SHOW_TABS_ENABLED"
 
 
 class ErrorDetail(BaseModel):
@@ -435,3 +438,137 @@ class VolumeAlert(BaseModel):
     exceeded: list[ExceededDimension] = Field(default_factory=list)
     message: str
     how_to_proceed: str
+
+
+# Capacidade 6 — Permissions ---------------------------------------------------
+
+
+class PermContentType(StrEnum):
+    """Tipos de conteúdo suportados pelas ferramentas de permissão.
+
+    Chave de dispatch para os métodos genéricos do `TableauClient` (ADR-003).
+    Todos os valores são minúsculos e coincidem com o nome do membro.
+    """
+
+    project = "project"
+    workbook = "workbook"
+    datasource = "datasource"
+    view = "view"
+    flow = "flow"
+    virtual_connection = "virtual_connection"
+
+
+class CapabilityRule(BaseModel):
+    """Uma capacidade e seu modo dentro de uma regra de permissão."""
+
+    name: str  # ex.: "Read", "Write", "ExportData"
+    mode: str  # "Allow" ou "Deny"
+
+
+class GranteePermissions(BaseModel):
+    """Conjunto de capacidades atribuídas a um usuário ou grupo (grantee)."""
+
+    grantee_type: Literal["user", "group"]
+    grantee_id: str
+    grantee_name: str
+    capabilities: list[CapabilityRule] = Field(default_factory=list)
+
+
+class PermissionsResult(BaseModel):
+    """Permissões explícitas de um item de conteúdo (RF grant/revoke/list)."""
+
+    status: Literal["success"] = "success"
+    content_type: str
+    content_id: str
+    content_name: str
+    permissions: list[GranteePermissions] = Field(default_factory=list)
+
+
+class DefaultPermissionsResult(BaseModel):
+    """Permissões padrão de um projeto para um tipo de conteúdo específico."""
+
+    status: Literal["success"] = "success"
+    project_id: str
+    project_name: str
+    for_content_type: str
+    permissions: list[GranteePermissions] = Field(default_factory=list)
+
+
+class UserInfo(BaseModel):
+    """Usuário do site com seu papel (site role)."""
+
+    id: str
+    name: str
+    site_role: str
+    last_login: str | None = None
+
+
+class GroupInfo(BaseModel):
+    """Grupo do site; `user_count` é `None` quando não informado pelo upstream."""
+
+    id: str
+    name: str
+    user_count: int | None = None
+
+
+class UserListResult(BaseModel):
+    """Listagem de usuários resolvidos (RF list_users)."""
+
+    status: Literal["success"] = "success"
+    users: list[UserInfo] = Field(default_factory=list)
+    total_count: int
+
+
+class GroupListResult(BaseModel):
+    """Listagem de grupos resolvidos (RF list_groups)."""
+
+    status: Literal["success"] = "success"
+    groups: list[GroupInfo] = Field(default_factory=list)
+    total_count: int
+
+
+class GroupMembersResult(BaseModel):
+    """Membros de um grupo (RF list_group_members, somente leitura)."""
+
+    status: Literal["success"] = "success"
+    group_id: str
+    group_name: str
+    members: list[UserInfo] = Field(default_factory=list)
+
+
+class ResolveResult(BaseModel):
+    """Resolução de nome para LUID; `site_role` só se aplica a usuários."""
+
+    status: Literal["success"] = "success"
+    id: str
+    name: str
+    site_role: str | None = None  # apenas para usuários
+
+
+class EffectiveCapability(BaseModel):
+    """Modo efetivo de uma capacidade após aplicar as regras do Tableau."""
+
+    name: str
+    mode: Literal["Allow", "Deny"]
+    # "user_rule", "group_rule", "site_role_cap", "ownership", "not_granted"
+    reason: str
+
+
+class EffectivePermissionsResult(BaseModel):
+    """Acesso efetivo computado localmente para um usuário num conteúdo (ADR-002).
+
+    Resultado "computado" (não autoritativo): combina regras explícitas,
+    agregação de grupos (Deny-wins), teto do site role e overrides de
+    propriedade/admin.
+    """
+
+    status: Literal["success"] = "success"
+    content_type: str
+    content_id: str
+    user_id: str
+    user_name: str
+    site_role: str
+    is_owner: bool
+    is_admin: bool
+    capabilities: list[EffectiveCapability] = Field(default_factory=list)
+    summary: str  # legível, ex.: "Acesso nível Viewer (Read, Filter, ExportImage)"
