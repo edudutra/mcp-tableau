@@ -21,6 +21,7 @@ from fastmcp import FastMCP
 from mcp_tableau.config import load_settings
 from mcp_tableau.models import (
     CapabilityRule,
+    DefaultPermissionsResult,
     ErrorCode,
     GranteePermissions,
     GroupInfo,
@@ -544,6 +545,186 @@ def _get_content_name(
         return ""
 
 
+# -- Helpers internos — default permissions ------------------------------------
+
+# Tipos de conteúdo que suportam permissões padrão de projeto.
+_VALID_DEFAULT_PERM_TYPES = frozenset(
+    {"workbook", "datasource", "flow", "virtual_connection"}
+)
+
+
+def _validate_default_perm_content_type(
+    for_content_type: str,
+) -> PermContentType | ToolError:
+    """Valida ``for_content_type`` contra os tipos suportados por default permissions.
+
+    Diferente da validação genérica de content_type: apenas workbook, datasource,
+    flow e virtual_connection são aceitos em operações de default permissions.
+    """
+    if for_content_type not in _VALID_DEFAULT_PERM_TYPES:
+        valid = ", ".join(sorted(_VALID_DEFAULT_PERM_TYPES))
+        return ToolError.of(
+            ErrorCode.VALIDATION_ERROR,
+            f"for_content_type '{for_content_type}' inválido para permissões padrão. "
+            f"Valores aceitos: {valid}.",
+        )
+    return PermContentType(for_content_type)
+
+
+def _rules_to_default_permissions_result(
+    rules: list[object],
+    project_id: str,
+    project_name: str,
+    for_content_type: PermContentType,
+) -> DefaultPermissionsResult:
+    """Converte lista de ``TSC.PermissionsRule`` para ``DefaultPermissionsResult``."""
+    grantee_perms: list[GranteePermissions] = []
+    for rule in rules:
+        grantee = getattr(rule, "grantee", None)
+        grantee_id = getattr(grantee, "id", "") or getattr(grantee, "_id", "")
+        grantee_name_val = getattr(grantee, "name", None) or ""
+
+        if isinstance(grantee, TSC.GroupItem):
+            g_type = "group"
+        else:
+            g_type = "user"
+
+        caps_dict = getattr(rule, "capabilities", {}) or {}
+        caps = [
+            CapabilityRule(name=cap_name, mode=cap_mode)
+            for cap_name, cap_mode in caps_dict.items()
+        ]
+
+        grantee_perms.append(
+            GranteePermissions(
+                grantee_type=g_type,
+                grantee_id=grantee_id,
+                grantee_name=grantee_name_val,
+                capabilities=caps,
+            )
+        )
+
+    return DefaultPermissionsResult(
+        project_id=project_id,
+        project_name=project_name,
+        for_content_type=for_content_type.value,
+        permissions=grantee_perms,
+    )
+
+
+# -- Ferramentas de permissões padrão de projeto -------------------------------
+
+
+def list_default_permissions(
+    project_name: str,
+    for_content_type: str,
+) -> DefaultPermissionsResult | ToolError:
+    """Lista as permissões padrão de um projeto para um tipo de conteúdo.
+
+    Permissões padrão definem o que novos itens publicados em um projeto herdam
+    automaticamente. Operação somente de leitura.
+
+    Args:
+        project_name: Nome exato do projeto.
+        for_content_type: Tipo de conteúdo cujas permissões padrão devem ser
+            listadas ('workbook', 'datasource', 'flow', 'virtual_connection').
+
+    Returns:
+        ``DefaultPermissionsResult`` com as regras padrão configuradas, ou
+        ``ToolError`` com código acionável (PROJECT_NOT_FOUND, VALIDATION_ERROR).
+    """
+    # Validar content type
+    ct = _validate_default_perm_content_type(for_content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # Resolver projeto por nome
+            project_id = client.find_project_id(project_name)
+            if project_id is None:
+                return ToolError.of(
+                    ErrorCode.PROJECT_NOT_FOUND,
+                    f"Projeto '{project_name}' não encontrado.",
+                )
+
+            # Buscar permissões padrão
+            rules = client.get_default_permissions(project_id, ct)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_default_permissions_result(rules, project_id, project_name, ct)
+
+
+def set_default_permissions(
+    project_name: str,
+    for_content_type: str,
+    grantee_type: str,
+    grantee_name: str,
+    capabilities: dict[str, str],
+) -> DefaultPermissionsResult | ToolError:
+    """Define permissões padrão em um projeto para um tipo de conteúdo.
+
+    Configura as permissões que novos itens do tipo especificado herdarão ao serem
+    publicados no projeto. A operação é aditiva: aplica as capabilities informadas
+    sem remover regras existentes de outros grantees.
+
+    Args:
+        project_name: Nome exato do projeto.
+        for_content_type: Tipo de conteúdo ('workbook', 'datasource', 'flow',
+            'virtual_connection').
+        grantee_type: 'user' ou 'group'.
+        grantee_name: Nome do usuário ou grupo a receber as permissões padrão.
+        capabilities: Mapa de capability → modo.
+            Ex.: {"Read": "Allow", "ExportData": "Deny"}.
+
+    Returns:
+        ``DefaultPermissionsResult`` com o estado atualizado das permissões
+        padrão, ou ``ToolError`` com código acionável.
+    """
+    # Validar inputs
+    ct = _validate_default_perm_content_type(for_content_type)
+    if isinstance(ct, ToolError):
+        return ct
+
+    err = _validate_grantee_type(grantee_type)
+    if err is not None:
+        return err
+
+    err = _validate_capabilities(capabilities)
+    if err is not None:
+        return err
+
+    try:
+        with tableau_session(load_settings()) as client:
+            # Resolver projeto por nome
+            project_id = client.find_project_id(project_name)
+            if project_id is None:
+                return ToolError.of(
+                    ErrorCode.PROJECT_NOT_FOUND,
+                    f"Projeto '{project_name}' não encontrado.",
+                )
+
+            # Resolver grantee
+            resolved = _resolve_grantee(client, grantee_type, grantee_name)
+            if isinstance(resolved, ToolError):
+                return resolved
+            grantee_id, _ = resolved
+
+            # Construir regra e aplicar
+            rule = _build_permission_rule(grantee_type, grantee_id, capabilities)
+            client.update_default_permissions(project_id, ct, [rule])
+
+            # Buscar estado atualizado
+            updated_rules = client.get_default_permissions(project_id, ct)
+    except TableauClientError as exc:
+        return ToolError.of(exc.code, exc.message)
+
+    return _rules_to_default_permissions_result(
+        updated_rules, project_id, project_name, ct
+    )
+
+
 # -- Registro ------------------------------------------------------------------
 
 
@@ -557,3 +738,5 @@ def register(mcp: FastMCP) -> None:
     mcp.tool(grant_permissions)
     mcp.tool(revoke_permissions)
     mcp.tool(list_permissions)
+    mcp.tool(list_default_permissions)
+    mcp.tool(set_default_permissions)

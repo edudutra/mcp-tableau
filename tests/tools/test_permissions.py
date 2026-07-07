@@ -14,6 +14,7 @@ import pytest
 import tableauserverclient as TSC
 
 from mcp_tableau.models import (
+    DefaultPermissionsResult,
     ErrorCode,
     GroupInfo,
     GroupListResult,
@@ -66,6 +67,10 @@ def client() -> MagicMock:
     mock.get_permissions.return_value = []
     mock.update_permissions.return_value = []
     mock.delete_permission.return_value = None
+    # Default permissions defaults
+    mock.find_project_id.return_value = "proj-1"
+    mock.get_default_permissions.return_value = []
+    mock.update_default_permissions.return_value = []
     # _perm_dispatch for _get_content_name
     mock_item = MagicMock()
     mock_item.name = "Test Content"
@@ -460,12 +465,12 @@ class TestListGroupMembers:
 class TestRegister:
     """Testes para a função `register(mcp)`."""
 
-    def test_registra_oito_ferramentas(self) -> None:
+    def test_registra_dez_ferramentas(self) -> None:
         mcp = MagicMock(name="FastMCP")
 
         permissions.register(mcp)
 
-        assert mcp.tool.call_count == 8
+        assert mcp.tool.call_count == 10
         registered = [call.args[0] for call in mcp.tool.call_args_list]
         assert permissions.list_users in registered
         assert permissions.list_groups in registered
@@ -475,6 +480,8 @@ class TestRegister:
         assert permissions.grant_permissions in registered
         assert permissions.revoke_permissions in registered
         assert permissions.list_permissions in registered
+        assert permissions.list_default_permissions in registered
+        assert permissions.set_default_permissions in registered
 
 
 # ==============================================================================
@@ -1148,3 +1155,405 @@ class TestListPermissions:
                 content_id="id-1",
             )
             assert isinstance(result, PermissionsResult), f"Failed for {ct}"
+
+
+# ==============================================================================
+# list_default_permissions
+# ==============================================================================
+
+
+class TestListDefaultPermissions:
+    """Testes para a ferramenta `list_default_permissions`."""
+
+    def test_happy_path_retorna_default_permissions_result(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Happy path retorna DefaultPermissionsResult."""
+        rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = [rule]
+
+        result = permissions.list_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.status == "success"
+        assert result.project_id == "proj-1"
+        assert result.project_name == "Marketing"
+        assert result.for_content_type == "workbook"
+        assert len(result.permissions) == 1
+        assert result.permissions[0].grantee_type == "user"
+        assert result.permissions[0].grantee_id == "u-1"
+        assert len(result.permissions[0].capabilities) == 2
+        client.find_project_id.assert_called_once_with("Marketing")
+        client.get_default_permissions.assert_called_once_with(
+            "proj-1", PermContentType.workbook
+        )
+
+    def test_projeto_nao_encontrado_retorna_project_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Projeto inexistente retorna ToolError(PROJECT_NOT_FOUND)."""
+        client.find_project_id.return_value = None
+
+        result = permissions.list_default_permissions(
+            project_name="Fantasma",
+            for_content_type="workbook",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.PROJECT_NOT_FOUND
+        assert "Fantasma" in result.error.message
+        client.get_default_permissions.assert_not_called()
+
+    def test_content_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """for_content_type inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.list_default_permissions(
+            project_name="Marketing",
+            for_content_type="project",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "project" in result.error.message
+        session.assert_not_called()
+
+    def test_content_type_view_invalido_para_default(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """for_content_type='view' retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.list_default_permissions(
+            project_name="Marketing",
+            for_content_type="view",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "view" in result.error.message
+        session.assert_not_called()
+
+    def test_permissoes_vazias_retorna_lista_vazia(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_default_permissions sem regras retorna lista de permissions vazia."""
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = []
+
+        result = permissions.list_default_permissions(
+            project_name="EmptyProject",
+            for_content_type="datasource",
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.permissions == []
+        assert result.for_content_type == "datasource"
+
+    def test_tableau_client_error_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """TableauClientError é convertido em ToolError."""
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.side_effect = TableauClientError(
+            ErrorCode.UPSTREAM_ERROR, "Erro na API REST."
+        )
+
+        result = permissions.list_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.UPSTREAM_ERROR
+
+    def test_todos_content_types_validos_aceitos(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Aceita workbook, datasource, flow, virtual_connection."""
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = []
+
+        valid_types = ["workbook", "datasource", "flow", "virtual_connection"]
+        for ct in valid_types:
+            result = permissions.list_default_permissions(
+                project_name="Proj",
+                for_content_type=ct,
+            )
+            assert isinstance(result, DefaultPermissionsResult), f"Failed for {ct}"
+            assert result.for_content_type == ct
+
+    def test_multiple_grantees_retornados(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """list_default_permissions retorna múltiplos grantees quando presentes."""
+        rule_user = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+        rule_group = _make_tsc_rule(
+            grantee_type="group",
+            grantee_id="g-1",
+            grantee_name="Analysts",
+            capabilities={"Write": "Allow", "ExportData": "Deny"},
+        )
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = [rule_user, rule_group]
+
+        result = permissions.list_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert len(result.permissions) == 2
+        assert result.permissions[0].grantee_type == "user"
+        assert result.permissions[1].grantee_type == "group"
+        assert len(result.permissions[1].capabilities) == 2
+
+
+# ==============================================================================
+# set_default_permissions
+# ==============================================================================
+
+
+class TestSetDefaultPermissions:
+    """Testes para a ferramenta `set_default_permissions`."""
+
+    def test_happy_path_retorna_default_permissions_result(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Happy path retorna DefaultPermissionsResult."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="user",
+            grantee_id="u-1",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = [updated_rule]
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow", "Write": "Allow"},
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.status == "success"
+        assert result.project_id == "proj-1"
+        assert result.project_name == "Marketing"
+        assert result.for_content_type == "workbook"
+        assert len(result.permissions) == 1
+        assert result.permissions[0].grantee_type == "user"
+        assert result.permissions[0].grantee_id == "u-1"
+        client.find_project_id.assert_called_once_with("Marketing")
+        client.resolve_user.assert_called_once_with("alice")
+        client.update_default_permissions.assert_called_once()
+        client.get_default_permissions.assert_called_once_with(
+            "proj-1", PermContentType.workbook
+        )
+
+    def test_projeto_nao_encontrado_retorna_project_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Projeto inexistente retorna ToolError(PROJECT_NOT_FOUND)."""
+        client.find_project_id.return_value = None
+
+        result = permissions.set_default_permissions(
+            project_name="Fantasma",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.PROJECT_NOT_FOUND
+        assert "Fantasma" in result.error.message
+        client.resolve_user.assert_not_called()
+        client.update_default_permissions.assert_not_called()
+
+    def test_grantee_nao_encontrado_retorna_not_found(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Grantee inexistente retorna ToolError(NOT_FOUND)."""
+        client.find_project_id.return_value = "proj-1"
+        client.resolve_user.side_effect = TableauClientError(
+            ErrorCode.NOT_FOUND, "Usuário 'ghost' não encontrado no site."
+        )
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="ghost",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.NOT_FOUND
+        assert "ghost" in result.error.message
+        client.update_default_permissions.assert_not_called()
+
+    def test_content_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """for_content_type inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="view",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "view" in result.error.message
+        session.assert_not_called()
+
+    def test_grantee_type_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """grantee_type inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="role",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "role" in result.error.message
+        session.assert_not_called()
+
+    def test_capabilities_vazio_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """capabilities vazio retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "vazio" in result.error.message
+        session.assert_not_called()
+
+    def test_capabilities_modo_invalido_retorna_validation_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """Modo inválido retorna ToolError(VALIDATION_ERROR)."""
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Grant"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.VALIDATION_ERROR
+        assert "Grant" in result.error.message
+        session.assert_not_called()
+
+    def test_com_grupo(self, client: MagicMock, session: MagicMock) -> None:
+        """set_default_permissions com grantee_type='group' resolve grupo."""
+        updated_rule = _make_tsc_rule(
+            grantee_type="group",
+            grantee_id="g-1",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+        client.find_project_id.return_value = "proj-1"
+        client.resolve_group.return_value = ("g-1", 5)
+        client.get_default_permissions.return_value = [updated_rule]
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="datasource",
+            grantee_type="group",
+            grantee_name="Analysts",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.permissions[0].grantee_type == "group"
+        assert result.permissions[0].grantee_id == "g-1"
+        client.resolve_group.assert_called_once_with("Analysts")
+        client.resolve_user.assert_not_called()
+
+    def test_tableau_client_error_retorna_tool_error(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """TableauClientError é convertido em ToolError."""
+        client.find_project_id.return_value = "proj-1"
+        client.update_default_permissions.side_effect = TableauClientError(
+            ErrorCode.UPSTREAM_ERROR, "Erro na API REST."
+        )
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="workbook",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, ToolError)
+        assert result.error.code == ErrorCode.UPSTREAM_ERROR
+
+    def test_flow_content_type_aceito(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """set_default_permissions aceita 'flow' como for_content_type."""
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = []
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="flow",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.for_content_type == "flow"
+        client.update_default_permissions.assert_called_once()
+
+    def test_virtual_connection_content_type_aceito(
+        self, client: MagicMock, session: MagicMock
+    ) -> None:
+        """set_default_permissions aceita 'virtual_connection' como for_content_type."""
+        client.find_project_id.return_value = "proj-1"
+        client.get_default_permissions.return_value = []
+
+        result = permissions.set_default_permissions(
+            project_name="Marketing",
+            for_content_type="virtual_connection",
+            grantee_type="user",
+            grantee_name="alice",
+            capabilities={"Read": "Allow"},
+        )
+
+        assert isinstance(result, DefaultPermissionsResult)
+        assert result.for_content_type == "virtual_connection"
